@@ -13,6 +13,8 @@ const statusEl = $('status');
 const latencyEl = $('latency');
 const lensEl = $('lens');
 const currentEl = $('current');
+const liveEl = $('live');
+const detEl = $('det');
 const historyEl = $('history');
 const startBtn = $('start');
 const intervalInput = $('interval');
@@ -37,6 +39,18 @@ const MOTION_FRAMES = false;
 const VIEW_CHANGE = 0.5;
 const THUMB_W = 24, THUMB_H = 18;
 
+// Fast tier, off unless the page is opened with ?detector=1: an on-device detector (detector.js)
+// runs on every camera frame and keeps a live line such as "2 people ahead, chair on the left"
+// (tracker.js), while Perceptron keeps reporting stairs, curbs, doors and text.
+const params = new URLSearchParams(location.search);
+const DETECTOR = params.get('detector') === '1';
+// Lite2 float16 on GPU: the only model that found both the bike and its rider on the test photos
+// (laptop benchmark: 41 ms/frame). ?model=lite0-f16 picks the lighter one.
+const DETECTOR_MODEL = params.get('model') || 'lite2-f16';
+const DETECT_FPS = 15;      // cap: plenty for walking speed, and saves battery and heat
+const SLOW_DETECT_MS = 125; // slower than ~8 fps the live line lags behind: drop to Lite0
+const SLOW_CHECK_FRAMES = 30;
+
 let stream = null;
 let facing = 'environment';
 let running = false;
@@ -50,6 +64,11 @@ let viewId = 0;             // bumps whenever the camera moves to a new view
 let viewThumb = null;       // thumbnail of the frame that started the current view
 let prevFrame = null;       // { image, size, t } paired with the next frame when MOTION_FRAMES
 let wakeLock = null;
+let detector = null;        // loaded once on the first Start with ?detector=1, kept across stops
+let detectorLoading = null;
+const tracker = DETECTOR ? Tracker.createTracker() : null;
+const liveStable = DETECTOR ? Tracker.createStabilizer() : null;
+let liveText = '';          // the live line on screen; Perceptron is told it was already said
 
 // ---------- camera ----------
 
@@ -158,7 +177,7 @@ async function sendFrame(id) {
   const size = `${canvas.width}x${canvas.height}`;
 
   // Perceptron rejects clips whose frames differ in size (e.g. after the phone rotates).
-  const body = { image, said };
+  const body = { image, said: saidWithLive() };
   if (MOTION_FRAMES && prevFrame && prevFrame.size === size && t0 - prevFrame.t <= MAX_PREV_FRAME_AGE) {
     body.prevImage = prevFrame.image;
     body.prevDtMs = Math.round(t0 - prevFrame.t);
@@ -204,9 +223,10 @@ function handleReply(seq, view, reply, totalMs, apiMs) {
   const wasError = currentEl.classList.contains('error');
   currentEl.classList.remove('error');
 
-  // Filter (filter.js) drops "n/a" and restatements of what was already shown for this view.
-  // It checks the current `said`, which may be newer than the one this request was sent with.
-  const { text, reason } = Filter.classifyReply(reply, said);
+  // Filter (filter.js) drops "n/a" and restatements of what was already shown for this view,
+  // including the detector's live line. It checks the current `said`, which may be newer than
+  // the one this request was sent with.
+  const { text, reason } = Filter.classifyReply(reply, saidWithLive());
   if (!text) {
     // Say why nothing changed: the model saw nothing new, or it repeated an earlier alert.
     setStatus(reason === 'repeat' ? 'Live · already said' : 'Live · nothing new', true);
@@ -222,6 +242,10 @@ function handleReply(seq, view, reply, totalMs, apiMs) {
   said = [...said, text].slice(-MAX_SAID);
 }
 
+// What the person has been told: Perceptron's alerts for this view plus the detector's live line,
+// so Perceptron doesn't repeat the people and chairs already on screen. MAX_SAID in total.
+const saidWithLive = () => (liveText ? [...said.slice(-(MAX_SAID - 1)), liveText] : said);
+
 function pushHistory(text) {
   const li = document.createElement('li');
   li.textContent = text;
@@ -230,6 +254,94 @@ function pushHistory(text) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---------- fast tier (?detector=1) ----------
+
+async function startDetector(id) {
+  if (!detector) {
+    detEl.textContent = 'Detector loading…';
+    detectorLoading ??= loadDetector(DETECTOR_MODEL);
+    try {
+      detector = await detectorLoading;
+    } catch (e) {
+      detectorLoading = null; // try again on the next Start
+      detEl.textContent = 'Detector failed';
+      console.warn('Detector failed to load', e);
+      return;
+    }
+  }
+  if (id !== runId) return;
+  detectorLoop(id);
+}
+
+// GPU first; if this browser can't run it there, the int8 Lite0 model on CPU (wasm).
+async function loadDetector(model) {
+  try {
+    return await Detector.createDetector({ model, delegate: 'GPU' });
+  } catch (e) {
+    console.warn('GPU detector unavailable, using CPU', e);
+    return Detector.createDetector({ model: 'lite0', delegate: 'CPU' });
+  }
+}
+
+let switchedModel = false;
+async function useLighterModel() {
+  if (switchedModel) return;
+  switchedModel = true;
+  try {
+    const lighter = await loadDetector('lite0-f16');
+    const old = detector;
+    detector = lighter;
+    old.close();
+  } catch (e) { console.warn('Could not load the lighter detector', e); }
+}
+
+const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s[s.length >> 1]; };
+// The front camera's frames aren't mirrored but the preview is: flip x so left means the person's left.
+const mirror = (d) => ({ ...d, box: { ...d.box, x: 1 - d.box.x - d.box.w } });
+
+// Runs the detector on the current camera frame DETECT_FPS times a second and keeps the live
+// line current. A timer, not requestVideoFrameCallback: frame callbacks follow page painting,
+// which browsers slow to ~1/s whenever the window isn't being drawn.
+function detectorLoop(id) {
+  const times = [], stamps = [];
+  let frames = 0;
+  const step = () => {
+    if (!running || id !== runId) return;
+    const now = performance.now();
+    if (video.videoWidth) {
+      let dets = [];
+      try { dets = detector.detect(video, now); } catch (e) { console.warn('detect failed', e); }
+      if (facing === 'user') dets = dets.map(mirror);
+      showLive(liveStable.next(Tracker.summarize(tracker.update(dets, now)), now));
+
+      times.push(performance.now() - now);
+      stamps.push(now);
+      if (times.length > SLOW_CHECK_FRAMES) { times.shift(); stamps.shift(); }
+      if (++frames % 8 === 0) {
+        const fps = (stamps.length - 1) / ((stamps[stamps.length - 1] - stamps[0]) / 1000);
+        detEl.textContent = `${detector.model} ${detector.delegate} · ${Math.round(fps)} fps · ${Math.round(median(times))} ms`;
+      }
+      if (times.length === SLOW_CHECK_FRAMES && median(times) > SLOW_DETECT_MS && detector.model === 'lite2-f16') useLighterModel();
+    }
+    setTimeout(step, Math.max(0, 1000 / DETECT_FPS - (performance.now() - now)));
+  };
+  step();
+}
+
+function showLive(text) {
+  if (text === liveText) return;
+  liveText = text;
+  liveEl.textContent = text;
+  window.dispatchEvent(new CustomEvent('narrator:live', { detail: { text, t: performance.now() } }));
+}
+
+function resetLive() {
+  tracker?.reset();
+  liveStable?.reset();
+  liveText = '';
+  liveEl.textContent = '';
+}
 
 async function loop(id) {
   while (running && id === runId) {
@@ -266,6 +378,7 @@ async function start() {
   currentEl.textContent = 'Looking…';
   requestWakeLock();
   loop(id);
+  if (DETECTOR) startDetector(id);
 }
 
 // Treat whatever the camera sees next as a fresh view.
@@ -274,6 +387,7 @@ function resetView() {
   viewThumb = null;
   said = [];
   prevFrame = null;
+  resetLive(); // tracked objects belong to the old camera or run
 }
 
 function stop() {

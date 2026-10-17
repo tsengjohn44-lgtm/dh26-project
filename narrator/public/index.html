@@ -17,10 +17,12 @@
     <span id="status" class="status">Idle</span>
     <span id="latency" class="latency"></span>
     <span id="lens" class="latency"></span>
+    <span id="det" class="latency"></span>
     <button id="flip" class="icon" aria-label="Switch camera">⇄</button>
   </header>
 
   <section class="caption" aria-live="polite">
+    <p id="live" class="live"></p>
     <p id="current" class="current">Tap Start to describe your surroundings.</p>
     <ol id="history" class="history"></ol>
   </section>
@@ -35,6 +37,8 @@
   </footer>
 
   <script src="filter.js"></script>
+  <script src="tracker.js"></script>
+  <script src="detector.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
