@@ -21,12 +21,24 @@ To get a real HTTPS URL instead, which also works off your Wi-Fi, run a tunnel t
 
 ## Use
 
-- **Start / Stop**: opens the rear camera and begins narrating. The next frame is sent as soon as the previous description finishes.
-- **Gap**: the minimum time between frames, if you want fewer API calls.
+- **Start / Stop**: opens the rear camera and begins narrating. The app uses the widest view it can get: the ultra-wide lens when the browser offers it (iOS Safari lists it as "Back Ultra Wide Camera"), otherwise the lowest zoom, at 4:3 so the full sensor is used. The top bar shows which camera is in use.
+- **Frame every**: how often a frame is sent (default 0.4 s). Up to 3 requests run at once. The top bar shows how long the last reply took, and how much of that was the model.
 - **⇄**: switches between the front and rear cameras.
 
 ## How it works
 
-`public/app.js` scales each frame down to 512 px and sends it as a JPEG data URL to `POST /api/describe`, along with the previous description, so the model can reply "No change." when the scene is the same (the caption then stays as it is). `server.js` adds the API key and calls `https://api.perceptron.inc/v1/chat/completions` with `stream: true` and reasoning off. It sends the reply back to the phone as plain text, so the caption fills in word by word. The API key never reaches the phone.
+The app is tuned for a blind pedestrian. It reports only hazards (stairs, curbs, potholes, obstacles, approaching vehicles), navigation cues (doors, crosswalks, turns) and large readable text (building and room names), in 12 words or fewer.
+
+`public/app.js` scales each frame to 768 px and sends it as a JPEG data URL to `POST /api/describe`, along with the last 5 alerts shown. `server.js` builds the request with `prompt.js`, adds the API key and calls `https://api.perceptron.inc/v1/chat/completions` with reasoning off. The API key never reaches the phone.
+
+The model takes about 0.9 s per frame, so the app doesn't wait for one reply before sending the next frame. A new frame goes out every 0.4 s, with up to 3 in flight, and a reply is dropped if a newer frame has already been answered. In a simulated walk, a new scene's alert appeared 1.0–1.6 s after the scene changed. Waiting for each reply before sending the next frame took 1.5–1.7 s.
+
+Alerts give a position (left, ahead, right, and "close" for things within about 2 steps) but no distances. The one exception is stairs, which get an estimated minimum count, e.g. "Stairs down ahead, at least 8 steps."
+
+The model replies `n/a` when nothing new and important is visible. `public/filter.js` also drops near-repeats of alerts already shown in the current view, except when a hazard has become "close" or new text appears, such as a different room number. The status says which happened: "nothing new" or "already said".
+
+To detect when the camera turns to a new view, the app compares a 24×18 grayscale thumbnail of each frame with the first frame of the current view. When they differ enough (`VIEW_CHANGE` in `app.js`), the old alert moves to history, the "already said" list is cleared, and replies still in flight for the old view are ignored. The new view is then described from scratch.
+
+Edit the prompt in `prompt.js`. Setting `MOTION_FRAMES = true` in `public/app.js` sends the previous frame along with the current one so the model can judge motion. It is off because, in testing, it produced false "approaching" alerts.
 
 Optional environment variables: `PERCEPTRON_MODEL`, `PORT` (default 8080), `HTTPS_PORT` (default 8443).

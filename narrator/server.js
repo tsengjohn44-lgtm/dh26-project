@@ -8,6 +8,7 @@ const path = require('path');
 const http = require('http');
 const https = require('https');
 const { execFileSync } = require('child_process');
+const { buildPayload } = require('./prompt');
 
 const ROOT = __dirname;
 const PUBLIC = path.join(ROOT, 'public');
@@ -24,13 +25,6 @@ if (!API_KEY) {
   console.error('Get a key at https://platform.perceptron.inc/');
   process.exit(1);
 }
-
-const SYSTEM_PROMPT =
-  'You narrate the surroundings, live, for someone who may be blind or low-vision. ' +
-  'Reply in 1-2 short, plain sentences, most important thing first. ' +
-  'Prioritise people, obstacles, hazards, steps, doors, vehicles and readable text, with rough ' +
-  'position (left / ahead / right, near / far). No preamble, no "the image shows". ' +
-  'If the scene is essentially the same as the previous description, reply exactly "No change."';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -93,7 +87,7 @@ function send(res, status, text) {
   res.end(text);
 }
 
-function readJson(req, limit = 8 * 1024 * 1024) {
+function readJson(req, limit = 16 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
@@ -109,35 +103,13 @@ function readJson(req, limit = 8 * 1024 * 1024) {
   });
 }
 
-// POST /api/describe  { image: "data:image/jpeg;base64,...", previous?: string }
-// Responds with a chunked text/plain stream of the description.
+// POST /api/describe  { image, prevImage?, prevDtMs?, said?: string[] }  (images as data URLs)
+// Responds with text/plain: the model's reply (a short alert, or "n/a"). The browser decides
+// whether it is new enough to show. Server-Timing reports how long Perceptron took.
 async function describe(req, res) {
-  let body;
-  try { body = await readJson(req); } catch (e) { return send(res, 400, `Bad request: ${e.message}`); }
-  if (typeof body.image !== 'string' || !body.image.startsWith('data:image/')) {
-    return send(res, 400, 'Expected { image: "data:image/..." }');
-  }
-
-  const previous = (body.previous || '').slice(0, 500);
-  const userText = previous
-    ? `Previous description: "${previous}"\nDescribe the current frame.`
-    : 'Describe the current frame.';
-
-  // Perceptron's output cap is `max_completion_tokens` (`max_tokens` is not in its schema).
-  // Reasoning is explicitly off: it would delay the first word and is not needed for captions.
-  const payload = {
-    model: MODEL,
-    stream: true,
-    reasoning_effort: 'none',
-    max_completion_tokens: 120,
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: [
-        { type: 'image_url', image_url: { url: body.image } },
-        { type: 'text', text: userText },
-      ] },
-    ],
-  };
+  let payload;
+  try { payload = buildPayload(await readJson(req), MODEL); } catch (e) { return send(res, 400, `Bad request: ${e.message}`); }
+  const t0 = performance.now();
 
   const abort = new AbortController();
   res.on('close', () => abort.abort());
@@ -165,40 +137,19 @@ async function describe(req, res) {
     return res.end(`Perceptron API ${upstream.status}: ${text.slice(0, 300)}`);
   }
 
-  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' });
-
-  const type = upstream.headers.get('content-type') || '';
+  let json;
   try {
-    if (type.includes('text/event-stream')) {
-      // Translate OpenAI-style SSE deltas into a plain text stream.
-      const decoder = new TextDecoder();
-      let buf = '';
-      for await (const chunk of upstream.body) {
-        buf += decoder.decode(chunk, { stream: true });
-        let nl;
-        while ((nl = buf.indexOf('\n')) >= 0) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (!line.startsWith('data:')) continue;
-          const data = line.slice(5).trim();
-          if (data === '[DONE]') continue;
-          let event;
-          try { event = JSON.parse(data); } catch { continue; } // keep-alives / partial junk
-          if (event.error) console.error('Perceptron stream error:', JSON.stringify(event.error));
-          // Final chunk may carry only usage, with no choices; reasoning_content is ignored.
-          const delta = event.choices?.[0]?.delta?.content;
-          if (delta) res.write(delta);
-        }
-      }
-    } else {
-      // Streaming not honoured: return the whole message at once.
-      const json = await upstream.json();
-      res.write(json.choices?.[0]?.message?.content || '');
-    }
+    json = await upstream.json();
   } catch (e) {
-    if (!abort.signal.aborted) console.error('Stream error:', e.message);
+    if (abort.signal.aborted) return;
+    return send(res, 502, `Bad upstream response: ${e.message}`);
   }
-  res.end();
+  res.writeHead(200, {
+    'Content-Type': 'text/plain; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Server-Timing': `api;dur=${Math.round(performance.now() - t0)}`,
+  });
+  res.end((json.choices?.[0]?.message?.content || '').trim());
 }
 
 function handler(req, res) {

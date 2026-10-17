@@ -32,6 +32,7 @@ html, body {
   position: fixed;
   top: 0; left: 0; right: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: calc(env(safe-area-inset-top) + 10px) 16px 10px;

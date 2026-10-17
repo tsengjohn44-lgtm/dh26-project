@@ -1,42 +1,101 @@
-// Capture loop: grab a frame, stream its description from /api/describe, repeat.
-// Only one request is in flight at a time so requests never pile up.
+// Capture loop: send a camera frame to /api/describe every `interval` ms, with up to
+// MAX_IN_FLIGHT requests overlapping. Overlap matters because the model takes ~0.9 s per frame:
+// waiting for each reply before capturing the next meant a scene change took ~2 s to show.
+// Replies for frames older than one already shown are dropped.
 
 const $ = (id) => document.getElementById(id);
 const video = $('video');
 const canvas = $('canvas');
 const ctx = canvas.getContext('2d');
+const thumbCanvas = document.createElement('canvas');
+const thumbCtx = thumbCanvas.getContext('2d', { willReadFrequently: true });
 const statusEl = $('status');
 const latencyEl = $('latency');
+const lensEl = $('lens');
 const currentEl = $('current');
 const historyEl = $('history');
 const startBtn = $('start');
-const gapInput = $('gap');
-const gapOut = $('gapOut');
+const intervalInput = $('interval');
+const intervalOut = $('intervalOut');
 
-const MAX_SIDE = 512;
+const MAX_SIDE = 768; // at 512 the model misread room numbers ("71A" as "714"); same latency
 const JPEG_QUALITY = 0.7;
 const HISTORY_LEN = 4;
 const REQUEST_TIMEOUT_MS = 20000;
-const NO_CHANGE = 'no change.';
+const MAX_IN_FLIGHT = 3;       // the API answered 3 concurrent requests about as fast as 1
+const MAX_SAID = 5;            // recent alerts sent back so the model doesn't repeat itself
+const MAX_PREV_FRAME_AGE = 4000; // older previous frames are too stale to judge motion from
+// Send the previous frame with the current one as a 2-frame clip so the model can judge motion.
+// Off: in testing the model called static scenes "approaching" and misidentified cyclists as
+// walkers when given clips, while single frames identified them correctly.
+const MOTION_FRAMES = false;
+// When a frame's thumbnail differs from the start of the current view by more than this
+// (Filter.viewChange, 0 = same, ~1 = unrelated), the camera is looking somewhere new: forget
+// what was "already said" so the new view gets described right away, and ignore replies still
+// in flight for the old view. Tuned on photos: 0 false resets from shake/exposure, ~95% of
+// different places detected.
+const VIEW_CHANGE = 0.5;
+const THUMB_W = 24, THUMB_H = 18;
 
 let stream = null;
 let facing = 'environment';
 let running = false;
-let runId = 0; // bumps on every start/stop so a stale loop exits instead of running twice
-let controller = null;
-let previous = '';
+let runId = 0;              // bumps on every start/stop so stale loops and replies are ignored
+const inFlight = new Set(); // AbortControllers of requests in progress
+let sentSeq = 0;            // sequence number of the last frame sent
+let shownSeq = 0;           // sequence number of the newest frame whose reply was handled
+let pausedUntil = 0;        // back-off after errors / rate limits
+let said = [];              // alerts shown for the current view, oldest first
+let viewId = 0;             // bumps whenever the camera moves to a new view
+let viewThumb = null;       // thumbnail of the frame that started the current view
+let prevFrame = null;       // { image, size, t } paired with the next frame when MOTION_FRAMES
 let wakeLock = null;
 
 // ---------- camera ----------
 
+// 4:3 uses the whole sensor on most phone cameras; 16:9 crops the top and bottom off.
+const CAMERA_SIZE = { width: { ideal: 1920 }, height: { ideal: 1440 }, aspectRatio: { ideal: 4 / 3 } };
+const getCamera = (video) => navigator.mediaDevices.getUserMedia({ audio: false, video: { ...CAMERA_SIZE, ...video } });
+
 async function openCamera() {
   stopCamera();
-  stream = await navigator.mediaDevices.getUserMedia({
-    audio: false,
-    video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } },
-  });
+  stream = await getCamera({ facingMode: { ideal: facing } });
+  if (facing === 'environment') await useWidestLens();
   video.srcObject = stream;
   await video.play();
+  showLens();
+}
+
+// Prefer the ultra-wide lens for a bigger field of view. Browsers only expose it in some cases:
+// iOS Safari lists it as "Back Ultra Wide Camera"; some Android phones instead allow zooming
+// out below 1x. Otherwise the default back camera stays.
+async function useWidestLens() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices(); // labels need camera permission
+    const wide = devices.find((d) => d.kind === 'videoinput' && /ultra\s*-?\s*wide/i.test(d.label));
+    const current = stream.getVideoTracks()[0]?.getSettings().deviceId;
+    if (wide && wide.deviceId !== current) {
+      stopCamera(); // phones generally allow only one open camera
+      try {
+        stream = await getCamera({ deviceId: { exact: wide.deviceId } });
+      } catch {
+        stream = await getCamera({ facingMode: { ideal: facing } });
+      }
+    }
+  } catch { /* enumerateDevices unsupported: keep the default camera */ }
+
+  try {
+    const track = stream.getVideoTracks()[0];
+    const zoom = track.getCapabilities?.().zoom;
+    if (zoom && zoom.min < (track.getSettings().zoom ?? 1)) await track.applyConstraints({ advanced: [{ zoom: zoom.min }] });
+  } catch { /* zoom unsupported */ }
+}
+
+function showLens() {
+  const track = stream?.getVideoTracks()[0];
+  const { width, height, zoom } = track?.getSettings() || {};
+  const name = (track?.label || '').replace(/camera/i, '').trim();
+  lensEl.textContent = [name, zoom && zoom !== 1 && `${zoom}×`, width && `${width}×${height}`].filter(Boolean).join(' · ');
 }
 
 function stopCamera() {
@@ -54,62 +113,113 @@ function grabFrame() {
   return canvas.toDataURL('image/jpeg', JPEG_QUALITY);
 }
 
-// ---------- describe loop ----------
+// Tiny grayscale copy of the frame just grabbed, for detecting a change of view.
+function grabThumb() {
+  thumbCanvas.width = THUMB_W;
+  thumbCanvas.height = THUMB_H;
+  thumbCtx.drawImage(canvas, 0, 0, THUMB_W, THUMB_H);
+  const px = thumbCtx.getImageData(0, 0, THUMB_W, THUMB_H).data;
+  const gray = new Float32Array(THUMB_W * THUMB_H);
+  for (let i = 0; i < gray.length; i++) gray[i] = 0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2];
+  return gray;
+}
+
+// Start a new view when the camera now sees something clearly different.
+function checkViewChange() {
+  const thumb = grabThumb();
+  if (viewThumb && Filter.viewChange(viewThumb, thumb) <= VIEW_CHANGE) return;
+  if (viewThumb) {
+    viewId++;
+    said = [];
+    setStatus('Live · new view', true);
+    // The old alert describes the old view: move it to history right away instead of
+    // leaving it up (it would stay if the new view has nothing to report).
+    if (currentEl.dataset.alert) pushHistory(currentEl.dataset.alert);
+    delete currentEl.dataset.alert;
+    currentEl.classList.remove('error');
+    currentEl.textContent = 'Looking…';
+  }
+  viewThumb = thumb;
+}
+
+// ---------- requests ----------
 
 class HttpError extends Error {
   constructor(message, retryAfterMs) { super(message); this.retryAfterMs = retryAfterMs; }
 }
 
-const isNoChange = (text) => text.trim().toLowerCase().replace(/\.$/, '') === 'no change';
-// True while a partial reply could still turn out to be "No change." (don't flash it on screen).
-const mayBeNoChange = (text) => NO_CHANGE.startsWith(text.trim().toLowerCase());
-
-async function describeOnce() {
+async function sendFrame(id) {
   const image = grabFrame();
-  if (!image) return false;
-
-  controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new Error('Request timed out')), REQUEST_TIMEOUT_MS);
+  if (!image) return; // camera starting or switching
+  checkViewChange();
   const t0 = performance.now();
+  const seq = ++sentSeq;
+  const view = viewId;
+  const size = `${canvas.width}x${canvas.height}`;
+
+  // Perceptron rejects clips whose frames differ in size (e.g. after the phone rotates).
+  const body = { image, said };
+  if (MOTION_FRAMES && prevFrame && prevFrame.size === size && t0 - prevFrame.t <= MAX_PREV_FRAME_AGE) {
+    body.prevImage = prevFrame.image;
+    body.prevDtMs = Math.round(t0 - prevFrame.t);
+  }
+  if (MOTION_FRAMES) prevFrame = { image, size, t: t0 };
+
+  const controller = new AbortController();
+  inFlight.add(controller);
+  const timer = setTimeout(() => controller.abort(new Error('Request timed out')), REQUEST_TIMEOUT_MS);
   try {
     const res = await fetch('/api/describe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image, previous }),
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
     if (!res.ok) {
       const retryAfter = Number(res.headers.get('retry-after'));
       throw new HttpError(await res.text(), retryAfter > 0 ? retryAfter * 1000 : 0);
     }
-
-    // Stream tokens into the caption as they arrive.
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let text = '';
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      text += decoder.decode(value, { stream: true });
-      if (text && !mayBeNoChange(text)) currentEl.textContent = text;
-    }
-    text = text.trim();
-    latencyEl.textContent = `${Math.round(performance.now() - t0)} ms`;
-    if (!text) return true;
-
-    if (isNoChange(text)) {
-      setStatus('Live · no change', true);
-      if (previous) currentEl.textContent = previous;
-      return true;
-    }
-    setStatus('Live', true);
-    currentEl.textContent = text;
-    if (previous && previous !== text) pushHistory(previous);
-    previous = text;
-    return true;
+    const reply = await res.text();
+    if (id !== runId) return;
+    const apiMs = Number(res.headers.get('server-timing')?.match(/dur=([\d.]+)/)?.[1]);
+    handleReply(seq, view, reply, performance.now() - t0, apiMs);
+  } catch (e) {
+    if (id !== runId) return; // stopped: aborts are expected
+    pausedUntil = performance.now() + Math.max(2000, e.retryAfterMs || 0);
+    setStatus('Error', false);
+    currentEl.textContent = e.message || String(e);
+    currentEl.classList.add('error');
   } finally {
     clearTimeout(timer);
+    inFlight.delete(controller);
   }
+}
+
+function handleReply(seq, view, reply, totalMs, apiMs) {
+  if (seq < shownSeq || view !== viewId) return; // a newer frame was answered, or the view changed
+  shownSeq = seq;
+  latencyEl.textContent = Number.isFinite(apiMs)
+    ? `${Math.round(totalMs)} ms (model ${Math.round(apiMs)})`
+    : `${Math.round(totalMs)} ms`;
+  const wasError = currentEl.classList.contains('error');
+  currentEl.classList.remove('error');
+
+  // Filter (filter.js) drops "n/a" and restatements of what was already shown for this view.
+  // It checks the current `said`, which may be newer than the one this request was sent with.
+  const { text, reason } = Filter.classifyReply(reply, said);
+  if (!text) {
+    // Say why nothing changed: the model saw nothing new, or it repeated an earlier alert.
+    setStatus(reason === 'repeat' ? 'Live · already said' : 'Live · nothing new', true);
+    if (!currentEl.dataset.alert) currentEl.textContent = 'Nothing important in view.';
+    else if (wasError) currentEl.textContent = currentEl.dataset.alert;
+    return;
+  }
+  setStatus('Live', true);
+  const shown = currentEl.dataset.alert;
+  if (shown) pushHistory(shown);
+  currentEl.textContent = text;
+  currentEl.dataset.alert = text;
+  said = [...said, text].slice(-MAX_SAID);
 }
 
 function pushHistory(text) {
@@ -123,21 +233,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function loop(id) {
   while (running && id === runId) {
-    const started = performance.now();
-    try {
-      // No frame yet (camera starting or switching): wait instead of spinning.
-      if (!(await describeOnce())) { await sleep(100); continue; }
-    } catch (e) {
-      if (!running || id !== runId) break;
-      setStatus('Error', false);
-      currentEl.textContent = e.message || String(e);
-      currentEl.classList.add('error');
-      await sleep(Math.max(2000, e.retryAfterMs || 0));
-      currentEl.classList.remove('error');
-      continue;
-    }
-    const wait = Number(gapInput.value) - (performance.now() - started);
-    if (wait > 0) await sleep(wait);
+    if (inFlight.size < MAX_IN_FLIGHT && performance.now() >= pausedUntil) sendFrame(id);
+    await sleep(Number(intervalInput.value));
   }
 }
 
@@ -161,6 +258,8 @@ async function start() {
   }
   running = true;
   const id = ++runId;
+  pausedUntil = 0;
+  resetView();
   startBtn.textContent = 'Stop';
   startBtn.classList.add('running');
   setStatus('Starting…', true);
@@ -169,10 +268,20 @@ async function start() {
   loop(id);
 }
 
+// Treat whatever the camera sees next as a fresh view.
+function resetView() {
+  viewId++;
+  viewThumb = null;
+  said = [];
+  prevFrame = null;
+}
+
 function stop() {
   running = false;
   runId++;
-  controller?.abort();
+  resetView();
+  for (const c of inFlight) c.abort();
+  inFlight.clear();
   stopCamera();
   releaseWakeLock();
   startBtn.textContent = 'Start';
@@ -193,14 +302,15 @@ startBtn.addEventListener('click', () => (running ? stop() : start()));
 $('flip').addEventListener('click', async () => {
   facing = facing === 'environment' ? 'user' : 'environment';
   video.style.transform = facing === 'user' ? 'scaleX(-1)' : '';
+  resetView(); // a different camera is a new view (and its frames aren't a clip with the old)
   if (stream) {
     try { await openCamera(); } catch (e) { currentEl.textContent = `Camera error: ${e.message}`; }
   }
 });
 
-gapInput.addEventListener('input', () => {
-  gapOut.textContent = `${(Number(gapInput.value) / 1000).toFixed(gapInput.value % 1000 ? 2 : 0)}s`;
-});
+const showInterval = () => { intervalOut.textContent = `${(Number(intervalInput.value) / 1000).toFixed(1)}s`; };
+intervalInput.addEventListener('input', showInterval);
+showInterval();
 
 // Pause while the page is hidden; resume when it comes back.
 let resumeOnShow = false;

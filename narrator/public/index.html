@@ -16,6 +16,7 @@
   <header class="top">
     <span id="status" class="status">Idle</span>
     <span id="latency" class="latency"></span>
+    <span id="lens" class="latency"></span>
     <button id="flip" class="icon" aria-label="Switch camera">⇄</button>
   </header>
 
@@ -28,11 +29,12 @@
     <span></span>
     <button id="start" class="start">Start</button>
     <label class="gap">
-      <span>Gap <output id="gapOut">0s</output></span>
-      <input id="gap" type="range" min="0" max="5000" step="250" value="0">
+      <span>Frame every <output id="intervalOut">0.4s</output></span>
+      <input id="interval" type="range" min="300" max="3000" step="100" value="400">
     </label>
   </footer>
 
+  <script src="filter.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
