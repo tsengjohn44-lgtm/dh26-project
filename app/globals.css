@@ -1,0 +1,49 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #000;
+  color: #fff;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+main {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.toggle {
+  flex: 1;
+  width: 100%;
+  border: 0;
+  margin: 0;
+  font-size: clamp(3rem, 18vw, 8rem);
+  font-weight: 800;
+  color: #000;
+  background: #ffd400;
+  touch-action: manipulation;
+}
+
+.toggle[aria-pressed="true"] {
+  background: #ff3b30;
+  color: #fff;
+}
+
+.toggle:focus-visible {
+  outline: 6px solid #fff;
+  outline-offset: -12px;
+}
+
+.status {
+  min-height: 5.5rem;
+  margin: 0;
+  padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom));
+  font-size: 1.4rem;
+  line-height: 1.3;
+}
+
+video {
+  display: none;
+}

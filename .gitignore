@@ -5,3 +5,8 @@
 node_modules/
 .venv/
 __pycache__/
+.next/
+next-env.d.ts
+certificates/
+*.tsbuildinfo
+!.env.example
