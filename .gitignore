@@ -5,3 +5,5 @@
 node_modules/
 .venv/
 __pycache__/
+narrator/certs/key.pem
+narrator/certs/cert.pem
