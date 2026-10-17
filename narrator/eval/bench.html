@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Detector benchmark</title>
+  <style>
+    body { margin: 0; padding: 16px; background: #111; color: #eee; font: 16px/1.4 system-ui, sans-serif; }
+    h1 { font-size: 1.3rem; margin: 0 0 8px; }
+    fieldset { border: 1px solid #444; border-radius: 8px; margin: 0 0 12px; }
+    label { display: block; padding: 4px 0; }
+    button { font: inherit; font-weight: 700; padding: 14px 18px; margin: 0 8px 8px 0; border: 0; border-radius: 10px; background: #ffd400; color: #000; }
+    button:disabled { opacity: 0.5; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.9rem; margin: 12px 0; }
+    th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid #333; }
+    #status { min-height: 1.4em; }
+    textarea { width: 100%; height: 9em; background: #000; color: #eee; font: 12px ui-monospace, monospace; }
+    video { width: 100%; max-height: 30vh; object-fit: contain; background: #000; }
+    .dets { font-size: 0.85rem; font-family: ui-monospace, monospace; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Detector benchmark</h1>
+  <p id="env"></p>
+  <fieldset id="configs"><legend>Detectors</legend></fieldset>
+  <button id="runCamera">Run with camera</button>
+  <button id="runImages">Run with test images</button>
+  <p id="status" aria-live="polite"></p>
+  <video id="video" playsinline muted hidden></video>
+  <table id="table" hidden>
+    <thead><tr><th>Detector</th><th>Load ms</th><th>First ms</th><th>Median ms</th><th>p90 ms</th><th>Max fps</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <p>Result (copy and send this):</p>
+  <textarea id="result" readonly></textarea>
+  <div id="dets" class="dets"></div>
+
+  <script src="/detector.js"></script>
+  <script src="bench.js"></script>
+</body>
+</html>

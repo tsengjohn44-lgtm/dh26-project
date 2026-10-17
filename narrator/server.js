@@ -17,6 +17,12 @@ const HTTP_PORT = Number(process.env.PORT || 8080);
 const HTTPS_PORT = Number(process.env.HTTPS_PORT || 8443);
 const API_URL = 'https://api.perceptron.inc/v1/chat/completions';
 const MODEL = process.env.PERCEPTRON_MODEL || 'perceptron-mk1.5';
+// EVAL=1 also serves the evaluation pages in eval/ at /eval/, and test images from the folder
+// in EVAL_IMAGES at /eval/images/ (kept out of git). Off by default so the demo server is unchanged.
+const EVAL = process.env.EVAL === '1';
+const EVAL_DIR = path.join(ROOT, 'eval');
+const EVAL_IMAGES = process.env.EVAL_IMAGES ? path.resolve(process.env.EVAL_IMAGES) : null;
+const IMAGE_FILE = /\.(jpe?g|png)$/i;
 
 loadDotEnv();
 const API_KEY = process.env.PERCEPTRON_API_KEY;
@@ -33,6 +39,8 @@ const MIME = {
   '.json': 'application/json',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
 };
 
 function loadDotEnv() {
@@ -72,14 +80,31 @@ function ensureCert() {
 }
 
 function serveStatic(req, res) {
-  const urlPath = decodeURIComponent(new URL(req.url, 'http://x').pathname);
-  const file = path.normalize(path.join(PUBLIC, urlPath === '/' ? 'index.html' : urlPath));
-  if (!file.startsWith(PUBLIC)) return send(res, 403, 'Forbidden');
+  let urlPath;
+  try { urlPath = decodeURIComponent(new URL(req.url, 'http://x').pathname); } catch { return send(res, 400, 'Bad path'); }
+  if (EVAL && urlPath === '/eval/images/') return listImages(res);
+  if (EVAL && EVAL_IMAGES && urlPath.startsWith('/eval/images/')) return serveFile(res, EVAL_IMAGES, urlPath.slice('/eval/images'.length));
+  if (EVAL && urlPath.startsWith('/eval/')) return serveFile(res, EVAL_DIR, urlPath.slice('/eval'.length));
+  serveFile(res, PUBLIC, urlPath === '/' ? '/index.html' : urlPath);
+}
+
+// Serves root + urlPath. The separator check also rejects siblings such as "public2" that a
+// plain startsWith(root) would let through (an encoded "..%2F" survives URL normalisation).
+function serveFile(res, root, urlPath) {
+  const file = path.normalize(path.join(root, urlPath));
+  if (file !== root && !file.startsWith(root + path.sep)) return send(res, 403, 'Forbidden');
   fs.readFile(file, (err, data) => {
     if (err) return send(res, 404, 'Not found');
     res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
     res.end(data);
   });
+}
+
+// JSON list of test image file names, so eval pages can find them without a hard-coded list.
+function listImages(res) {
+  const names = EVAL_IMAGES && fs.existsSync(EVAL_IMAGES) ? fs.readdirSync(EVAL_IMAGES).filter((f) => IMAGE_FILE.test(f)).sort() : [];
+  res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
+  res.end(JSON.stringify(names));
 }
 
 function send(res, status, text) {
@@ -161,6 +186,7 @@ function handler(req, res) {
 http.createServer(handler).listen(HTTP_PORT, '0.0.0.0', () => {
   console.log(`\nLive Scene Narrator  (model: ${MODEL})`);
   console.log(`  Desktop:  http://localhost:${HTTP_PORT}`);
+  if (EVAL) console.log(`  Eval:     http://localhost:${HTTP_PORT}/eval/bench.html   (images: ${EVAL_IMAGES || 'none, set EVAL_IMAGES'})`);
 });
 
 const tls = ensureCert();
