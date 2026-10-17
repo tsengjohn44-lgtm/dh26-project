@@ -105,6 +105,22 @@ function announce(text: string) {
   speechSynthesis.speak(new SpeechSynthesisUtterance(text));
 }
 
+// Browser voice, used when the xAI TTS route is unavailable.
+function speakWithBrowser(text: string, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof speechSynthesis === "undefined") return resolve();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.onend = () => resolve();
+    utterance.onerror = () => resolve();
+    signal.addEventListener("abort", () => {
+      speechSynthesis.cancel();
+      resolve();
+    });
+    speechSynthesis.cancel();
+    speechSynthesis.speak(utterance);
+  });
+}
+
 export default function Home() {
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState("Tap Start. Point your phone ahead.");
@@ -130,6 +146,7 @@ export default function Home() {
     const audio = audioRef.current!;
     let lastSpoken = "";
     let lastError = "";
+    let useBrowserVoice = false;
 
     while (!signal.aborted) {
       try {
@@ -146,17 +163,24 @@ export default function Home() {
 
           if (text && similarity(text, lastSpoken) < SIMILARITY_SKIP) {
             setStatus(text);
-            const speech = await fetch("/api/speak", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ text }),
-              signal,
-            });
-            if (!speech.ok) throw new Error("Could not play speech.");
-            const url = URL.createObjectURL(await speech.blob());
             lastSpoken = text;
-            await playUntilEnd(audio, url, signal);
-            URL.revokeObjectURL(url);
+            if (!useBrowserVoice) {
+              const speech = await fetch("/api/speak", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ text }),
+                signal,
+              });
+              if (speech.ok) {
+                const url = URL.createObjectURL(await speech.blob());
+                await playUntilEnd(audio, url, signal);
+                URL.revokeObjectURL(url);
+              } else {
+                console.warn("xAI TTS unavailable, switching to browser voice");
+                useBrowserVoice = true;
+              }
+            }
+            if (useBrowserVoice) await speakWithBrowser(text, signal);
           }
           lastError = "";
         }
@@ -176,6 +200,9 @@ export default function Home() {
     const audio = (audioRef.current ??= new Audio());
     audio.src = silentWavUrl();
     audio.play().catch(() => {});
+    if (typeof speechSynthesis !== "undefined") {
+      speechSynthesis.speak(new SpeechSynthesisUtterance(""));
+    }
 
     setStatus("Starting camera…");
     try {
