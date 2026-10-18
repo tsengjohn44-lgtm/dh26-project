@@ -15,6 +15,7 @@ window.Speech = (() => {
   const RETRIES = 1;          // one retry if a clip fails before any audio arrives
   const START_DELAY = 0.05;   // s of headroom when scheduling the first chunk (absorbs jitter)
   const MIN_CHUNK = 0.06;     // s; network chunks are merged up to this before scheduling
+  const STALL_MS = 8000;      // a download that receives nothing for this long is given up
 
   let ctx = null;
   let enabled = true;
@@ -47,12 +48,20 @@ window.Speech = (() => {
 
   async function download(clip, gen) {
     for (let attempt = 0; ; attempt++) {
+      // Watchdog: give up on a download that receives nothing for STALL_MS, so a hung request
+      // can't keep the queue (and the app's paused-while-speaking camera) waiting forever.
+      const attemptAbort = new AbortController();
+      const onCancel = () => attemptAbort.abort();
+      clip.abort.signal.addEventListener('abort', onCancel, { once: true });
+      let watchdog = null;
+      const kick = () => { clearTimeout(watchdog); watchdog = setTimeout(() => attemptAbort.abort(), STALL_MS); };
+      kick();
       try {
         const res = await fetch('/api/speak', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text: clip.text.slice(0, MAX_TEXT) }),
-          signal: clip.abort.signal,
+          signal: attemptAbort.signal,
         });
         if (res.status === 503) { enabled = false; throw new Error(await res.text()); } // no key on the server
         if (!res.ok) throw new Error(await res.text());
@@ -75,6 +84,7 @@ window.Speech = (() => {
           const { value, done } = await reader.read();
           if (done) break;
           if (gen !== generation) return;
+          kick();
           let bytes = value;
           if (odd) { bytes = new Uint8Array(odd.length + value.length); bytes.set(odd); bytes.set(value, odd.length); odd = null; }
           if (bytes.length % 2) { odd = bytes.slice(-1); bytes = bytes.subarray(0, bytes.length - 1); }
@@ -89,7 +99,11 @@ window.Speech = (() => {
         break;
       } catch (e) {
         if (gen !== generation || clip.abort.signal.aborted) return;
-        if (!enabled || attempt >= RETRIES || clip.chunks.length) { stats.lastError = e.message || String(e); onChange(); break; }
+        const reason = attemptAbort.signal.aborted ? 'speech download stalled' : (e.message || String(e));
+        if (!enabled || attempt >= RETRIES || clip.chunks.length) { stats.lastError = reason; onChange(); break; }
+      } finally {
+        clearTimeout(watchdog);
+        clip.abort.signal.removeEventListener('abort', onCancel);
       }
     }
     clip.done = true;
@@ -173,6 +187,7 @@ window.Speech = (() => {
     cancel,
     stats,
     get pending() { return queue.length; },
+    get context() { return ctx; }, // the AudioContext unlocked by the Start tap (shared with beeper.js)
     get enabled() { return enabled; },
     set enabled(v) { enabled = v; if (!v) cancel(); },
     get interrupt() { return interrupt; },

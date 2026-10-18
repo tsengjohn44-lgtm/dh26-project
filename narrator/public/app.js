@@ -522,6 +522,7 @@ async function start() {
   setStatus('Starting…', true);
   currentEl.textContent = 'Looking…';
   requestWakeLock();
+  Beeper.start(); // distance-sensor beeps (shares the audio context unlocked above)
   loop(id);
 }
 
@@ -540,6 +541,7 @@ function stop() {
   for (const c of inFlight) c.abort();
   inFlight.clear();
   Speech.cancel();
+  Beeper.stop();
   stopCamera();
   releaseWakeLock();
   unlockPortrait();
@@ -599,6 +601,38 @@ function renderVoice() {
     : [delayMs && `voice starts in ${delayMs} ms`, waiting && `${waiting} queued`].filter(Boolean).join(' · ');
 }
 Speech.onChange = renderVoice;
+
+// ---------- proximity beeps (ESP8266 distance sensor, see beeper.js) ----------
+
+const beepsBox = $('beeps');
+const beepVolumeInput = $('beepVolume');
+const beepIntensityInput = $('beepIntensity');
+const loadNumber = (key, fallback) => { try { const v = Number(localStorage.getItem(key)); return localStorage.getItem(key) === null || !Number.isFinite(v) ? fallback : v; } catch { return fallback; } };
+const saveNumber = (key, v) => { try { localStorage.setItem(key, String(v)); } catch { /* storage blocked */ } };
+
+beepsBox.checked = loadPref('beeps', true);
+beepVolumeInput.value = loadNumber('beepVolume', 60);
+beepIntensityInput.value = loadNumber('beepIntensity', 1);
+
+function applyBeepSettings() {
+  Beeper.enabled = beepsBox.checked;
+  Beeper.volume = Number(beepVolumeInput.value) / 100;
+  Beeper.intensity = Number(beepIntensityInput.value);
+  $('beepVolumeOut').textContent = `${beepVolumeInput.value}%`;
+  $('beepIntensityOut').textContent = `${Number(beepIntensityInput.value).toFixed(1)}×`;
+}
+beepsBox.addEventListener('change', () => { Speech.unlock(); savePref('beeps', beepsBox.checked); applyBeepSettings(); });
+beepVolumeInput.addEventListener('input', () => { saveNumber('beepVolume', beepVolumeInput.value); applyBeepSettings(); });
+beepIntensityInput.addEventListener('input', () => { saveNumber('beepIntensity', beepIntensityInput.value); applyBeepSettings(); });
+applyBeepSettings();
+
+// Header chip: what the sensor reports ('off' before Start).
+Beeper.onChange = (state) => {
+  $('distance').textContent = state === 'off' ? ''
+    : state === 'offline' ? 'sensor offline'
+    : state === 'clear' ? 'sensor: clear'
+    : `obstacle ${state} m`;
+};
 
 const showInterval = () => { intervalOut.textContent = `${(Number(intervalInput.value) / 1000).toFixed(1)}s`; };
 intervalInput.addEventListener('input', showInterval);

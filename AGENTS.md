@@ -48,10 +48,11 @@ node server.js                            # Node >= 18, no npm install
   - `ELEVENLABS_MODEL` (default `eleven_v4_turbo`)
   - `ELEVENLABS_VOICE_ID` (default `JBFqnCBsd6RMkjVDRZzb`, a default ElevenLabs voice)
   - `ELEVENLABS_SAMPLE_RATE` (default `24000`; raw PCM output. 44100 requires the ElevenLabs Pro tier and is refused on the current key)
-  - `ELEVENLABS_TAG` (default `[speaking quickly]`, prefixed to the text for v3/v4 models; set it empty to disable)
+  - `ELEVENLABS_TAG` (default `[rapidly]`, prefixed to the text for v3/v4 models; set it empty to disable)
   - `ELEVENLABS_EARLY` (default on; `0` turns off early speech, which starts generating audio in `describe()`)
   - `ELEVENLABS_SPEED` (default `1.2`; `voice_settings.speed`, which only non-v3/v4 models such as Flash honor)
   - `PORT` (8080), `HTTPS_PORT` (8443)
+  - `DISTANCE_PORT` (default 5000): plain-HTTP port for the ESP8266 distance sensor. **On macOS, port 5000 is usually taken by the AirPlay Receiver**: turn it off (System Settings > General > AirDrop & Handoff), or use another port. The server says so at startup. `/distance` also works on `PORT`.
 - After changing files under `public/`, hard-refresh the phone. After changing `server.js` or `prompt.js`, restart the server.
 
 ## 3. Repo map
@@ -60,6 +61,7 @@ node server.js                            # Node >= 18, no npm install
 AGENTS.md            this file: the guide for all AI agents
 CLAUDE.md            one line, "@AGENTS.md", so Claude Code loads this file
 README.md            repo credits (.claude/ agents and skills come from ECC, MIT)
+esp8266_main.ino     ESP8266 + ultrasonic sensor: POSTs distance=<m>|Out_of_Range to the server every ~200 ms (own buzzer < 5 cm)
 .claude/             shared agent definitions and skills (code-reviewer, build-error-resolver, …)
 narrator/
   server.js          static file server + POST /api/describe proxy to Perceptron; HTTP 8080 and HTTPS 8443
@@ -73,6 +75,7 @@ narrator/
     app.js           camera, frame capture, request scheduler, view-change detection, UI updates
     filter.js        shared by browser and Node: n/a and repeat filtering, viewChange()
     speech.js        ElevenLabs speech: audio queue, prefetch, interrupt, Web Audio playback (window.Speech)
+    beeper.js        proximity beeps from the distance sensor: curve, scheduler, ducking (window.Beeper)
 ```
 
 ## 4. Architecture and data flow
@@ -117,6 +120,10 @@ handleReply():
   - On success it returns the trimmed `choices[0].message.content` as `text/plain`, with a `Server-Timing: api;dur=<ms>` header.
   - It passes 429 and 503 statuses through with `Retry-After`. Other upstream errors become 502. Bad input gets a 400.
   - It aborts the upstream request if the client disconnects.
+- **Distance sensor:**
+  - `POST /distance` (form-encoded `distance=<metres>` or `distance=Out_of_Range`, from `esp8266_main.ino`) stores the latest reading. It replies 204, or 400 for bad values.
+  - `GET /api/distance/stream` is a Server-Sent Events stream of `{metres, at, ageMs?}`. A newly connected phone gets the latest reading, with `ageMs`, so the phone can tell how old it is despite clock differences. Keep-alive every 15 s.
+  - A separate plain-HTTP listener on `DISTANCE_PORT` serves the ESP, which can't verify our self-signed HTTPS certificate. Startup prints the `serverUrl` to put in the sketch.
 - `speak()` handles `POST /api/speak` with `{text}`:
   - It calls ElevenLabs `POST /v1/text-to-speech/{voice}/stream?output_format=…` with `model_id` and `language_code: 'en'`, authenticated with the `xi-api-key` header.
   - It requests `output_format=pcm_<rate>`, prefixes `ELEVENLABS_TAG` to the text for v3/v4 models, and sends `voice_settings.speed`.
@@ -168,6 +175,21 @@ handleReply():
   - interrupt, retry, cancel, and voice off
 - Real API through `server.js`: first audio arrives in about 200 ms (about 400 ms on a cold connection).
 - **Not yet verified by listening on a phone.**
+
+### `narrator/public/beeper.js` (`window.Beeper`, `beepParams` also exported for Node)
+- Readings come from `EventSource('/api/distance/stream')`, opened by `Beeper.start()` (in `start()`) and closed by `Beeper.stop()`.
+- **Stale:** no reading for 1.5 s (`STALE_MS`) means silent, and the header chip says "sensor offline".
+- **Curve** `beepParams(metres, intensity)`:
+  - silent beyond 2 m or out of range
+  - closeness `c = (2 − d)/1.9`, shaped `p = (c^(1/intensity))²`
+  - interval `1.2 s × (0.08/1.2)^p`, gain `0.03 + 0.97·p^1.5`, pitch `650 + 550·p` Hz
+  - ≤10 cm: every 0.08 s, full gain, marked `urgent`
+  - At 1×: 2 m every 1.20 s at 3%; 1 m every 0.57 s at 17%; 0.5 m every 0.22 s at 51%; 0.25 m every 0.12 s at 79%.
+- **Scheduler:** a lookahead loop runs every 50 ms and schedules 150 ms ahead on the audio clock. The next beep is due one *current* interval after the last, so approaching speeds up at once. Each beep is a sine `OscillatorNode` with a 5 ms attack and 60 ms decay.
+- **Levels:** master gain = volume × 0.3 while `Speech.pending > 0` (ducking), except when `urgent`. It ramps with `setTargetAtTime` so it doesn't click.
+- Shares `Speech.context`, the `AudioContext` unlocked in the Start tap.
+- **UI:** Beeps row in the footer: the `#beeps` toggle, `#beepVolume` 0–100 (default 60) and `#beepIntensity` 0.5–2 (default 1). They're saved in `localStorage` keys `beeps`, `beepVolume` and `beepIntensity`. The `#distance` header chip shows "obstacle 0.42 m", "sensor: clear" or "sensor offline".
+- **Tests (simulated):** curve and scheduler, 20 checks with a fake audio clock and stream. Server stream, 11 checks with real HTTP. App wiring, 5 checks in the fake browser.
 
 ### `narrator/public/app.js`
 - **Camera:** `openCamera()` requests 1920×1440 at 4:3. On most phones that uses the full sensor; 16:9 crops it. Then `useWidestLens()`:
@@ -243,7 +265,8 @@ handleReply():
 | ElevenLabs `eleven_v4_turbo` for speech | The user asked for maximum realism and generation speed, with unlimited credits. Per ElevenLabs' model docs (Oct 2026), v4 Turbo is their most realistic real-time model at about 100 ms median inference. Flash v2.5 is about 75 ms but lower quality; Eleven v4 is the highest quality but not real-time. The earlier browser `speechSynthesis` version was removed because it lagged about 10 s behind. |
 | Early speech: start generating in `describe()` | Without it, generation only starts after the reply has gone to the phone and the phone has asked for audio, which costs one phone↔laptop round trip. Measured from the reply reaching the phone to its first audio byte, over 6–7 real alerts, with a simulated 150 ms hop each way: median 901 ms → 510 ms. With no network hop, no difference (328 vs 351 ms, noise). |
 | Raw PCM streaming instead of MP3 | With MP3, the browser had to download and decode the whole clip before playing: about 0.7–0.9 s plus decode time. The PCM stream's first chunk arrives in about 0.2 s and is played at once. |
-| `[speaking quickly]` tag for faster speech | User asked for faster speech. Measured: v4 Turbo ignores `voice_settings.speed` (same 5.0 s clip at 1.0, 1.2 and 1.5) but follows the tag, giving about 15–20% shorter clips (4.40 s → 3.68 s for one alert; 16.48 s → 14.00 s for three alerts through the server). `scribe_v2` transcripts of 9 clips confirm the tag isn't spoken. Alternative: `ELEVENLABS_MODEL=eleven_flash_v2_5` with speed 1.2 is faster still (3.16 s vs 3.84 s for the same sentence; first audio about 170 ms) but less realistic. |
+| `[rapidly]` tag for faster speech | v4 Turbo ignores `voice_settings.speed` but follows an audio tag, which isn't spoken (checked with `scribe_v2` transcripts). Measured on 3 alerts: no tag 10.16 s, `[speaking quickly]` 8.32 s, `[fast-paced]` 8.32 s, `[speaking very quickly]` 7.52 s, **`[rapidly]` 7.44 s**. Faster still but less natural: `ELEVENLABS_MODEL=eleven_flash_v2_5`, 6.46 s at speed 1.2. ElevenLabs rejects speeds above 1.2 (400 `invalid_voice_settings`). |
+| Pause image sending while speaking (`PAUSE_WHILE_SPEAKING` in `app.js`) | User request: each alert is heard in full before the app looks again. `loop()` sends no frames while `Speech.pending > 0` and voice is on; requests already in flight still finish. Trade-off: nothing new is detected during speech, typically 2–3 s per alert. `speech.js` gives up on a download that receives nothing for `STALL_MS = 8000`, so a hung request can't pause the camera forever. |
 | Speech queue: in order, nothing dropped, every clip generated as soon as it is queued | User requirement: no alert is lost. Generating ahead means the next clip is ready when the current one ends. Interrupt mode is opt-in. In queue mode, speech can fall behind if alerts come faster than they can be spoken; the voice chip shows how many are queued. |
 | Web Audio API for playback, unlocked in the Start tap | iOS Safari only plays sound started from a user tap. One `AudioContext` resumed in the tap can play every later clip; new `<audio>` elements created later would be blocked. |
 | Zero dependencies | Runs anywhere with Node 18+. No build step. |

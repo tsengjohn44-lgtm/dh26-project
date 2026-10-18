@@ -60,7 +60,7 @@ html, body {
 .caption {
   position: fixed;
   left: 0; right: 0;
-  bottom: calc(env(safe-area-inset-bottom) + 112px);
+  bottom: calc(env(safe-area-inset-bottom) + 172px); /* clears the controls incl. the beeps row */
   padding: 0 16px;
 }
 
@@ -97,7 +97,20 @@ html, body {
   align-items: center;
   gap: 12px;
   padding: 12px 16px calc(env(safe-area-inset-bottom) + 16px);
-  background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.85) 30%);
+}
+
+/* Proximity beeps row: spans the whole footer above the main controls. */
+.beeps {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: auto 1fr 1fr;
+  align-items: center;
+  gap: 14px;
+}
+@media (max-width: 360px) {
+  .beeps { grid-template-columns: 1fr 1fr; }
+  .beeps .toggle { grid-column: 1 / -1; }
 }
 
 .start {

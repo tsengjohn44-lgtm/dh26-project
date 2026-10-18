@@ -23,9 +23,10 @@ To get a real HTTPS URL instead, which also works off your Wi-Fi, run a tunnel t
 ## Use
 
 - **Start / Stop**: opens the rear camera and begins narrating. The app uses the widest view it can get: the ultra-wide lens when the browser offers it (iOS Safari lists it as "Back Ultra Wide Camera"), otherwise the lowest zoom, at 4:3 so the full sensor is used. The top bar shows which camera is in use.
-- **Voice**: speaks each new alert with ElevenLabs (`eleven_v4_turbo`). Audio is streamed, and the server starts generating it as soon as Perceptron replies, before the alert reaches the phone. A "speak quickly" instruction makes delivery about 15–20% faster. By default alerts are queued and spoken in order, with none skipped. The top bar shows how quickly speech started and how many clips are waiting. Requires `ELEVENLABS_API_KEY`; set `ELEVENLABS_VOICE_ID` to use a different voice. For even faster but less natural speech, set `ELEVENLABS_MODEL=eleven_flash_v2_5`; it speaks at `ELEVENLABS_SPEED`, default 1.2.
+- **Voice**: speaks each new alert with ElevenLabs (`eleven_v4_turbo`). Audio is streamed, and the server starts generating it as soon as Perceptron replies, before the alert reaches the phone. A `[rapidly]` delivery instruction makes speech about 27% faster than plain. While an alert is being spoken, no new images are sent to Perceptron. By default alerts are queued and spoken in order, with none skipped. The top bar shows how quickly speech started and how many clips are waiting. Requires `ELEVENLABS_API_KEY`; set `ELEVENLABS_VOICE_ID` to use a different voice. For even faster but less natural speech, set `ELEVENLABS_MODEL=eleven_flash_v2_5`; it speaks at `ELEVENLABS_SPEED`, default 1.2.
 - **Phones** go fullscreen and lock to portrait on Start. This stops the screen from turning over when you tilt the phone, which made the camera image upside down on Android.
 - **Interrupt**: when on, a new alert cuts off the one being spoken and skips anything queued, so you always hear the latest.
+- **Beeps**: quiet proximity beeps from the ESP8266 distance sensor. Silent beyond 2 m; faint and slow from 2 m, getting louder, faster and higher toward 10 cm, where they're fast and loud. They go quieter while the voice speaks, except at 10 cm or less. **Beep volume** sets the loudness; **Intensity** (0.5×–2×) makes them ramp up sooner (higher) or later (lower). The header shows the distance, "sensor: clear" or "sensor offline".
 - **Frame every**: how often a frame is sent (default 0.4 s). Up to 3 requests run at once. The top bar shows how long the last reply took, and how much of that was the model.
 - **⇄**: switches between the front and rear cameras.
 
@@ -46,3 +47,9 @@ To detect when the camera turns to a new view, the app compares a 24×18 graysca
 Edit the prompt in `prompt.js`. Setting `MOTION_FRAMES = true` in `public/app.js` sends the previous frame along with the current one so the model can judge motion. It is off because, in testing, it produced false "approaching" alerts.
 
 Optional environment variables: `PERCEPTRON_MODEL`, `PORT` (default 8080), `HTTPS_PORT` (default 8443).
+
+## Distance sensor (ESP8266)
+
+`esp8266_main.ino` sends a reading every ~200 ms. Put the address the server prints at startup (`ESP8266: set serverUrl to http://<laptop-ip>:5000/distance`) into `serverUrl`, and make sure the board joins the same Wi-Fi as the laptop.
+
+On macOS, port 5000 is usually taken by the AirPlay Receiver. Turn it off under System Settings > General > AirDrop & Handoff, or point the sketch at port 8080 instead (`/distance` works there too). Another option is `DISTANCE_PORT=5050 node server.js`, with that port in the sketch.

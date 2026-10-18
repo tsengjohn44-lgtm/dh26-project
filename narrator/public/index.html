@@ -18,6 +18,7 @@
     <span id="latency" class="latency"></span>
     <span id="lens" class="latency"></span>
     <span id="voiceStatus" class="latency"></span>
+    <span id="distance" class="latency"></span>
     <button id="debugBtn" class="icon" aria-label="Show diagnostics" aria-pressed="false">🐞</button>
     <button id="flip" class="icon" aria-label="Switch camera">⇄</button>
   </header>
@@ -36,6 +37,17 @@
   </section>
 
   <footer class="controls">
+    <div class="beeps" role="group" aria-label="Proximity beeps">
+      <label class="toggle"><input id="beeps" type="checkbox" checked> <span>Beeps</span></label>
+      <label class="gap">
+        <span>Beep volume <output id="beepVolumeOut">60%</output></span>
+        <input id="beepVolume" type="range" min="0" max="100" step="5" value="60" aria-label="Beep volume">
+      </label>
+      <label class="gap">
+        <span>Intensity <output id="beepIntensityOut">1.0×</output></span>
+        <input id="beepIntensity" type="range" min="0.5" max="2" step="0.1" value="1" aria-label="Beep intensity">
+      </label>
+    </div>
     <div class="toggles">
       <label class="toggle"><input id="voice" type="checkbox" checked> <span>Voice</span></label>
       <label class="toggle"><input id="interrupt" type="checkbox"> <span>Interrupt</span></label>
@@ -49,6 +61,7 @@
 
   <script src="filter.js"></script>
   <script src="speech.js"></script>
+  <script src="beeper.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

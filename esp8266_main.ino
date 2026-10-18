@@ -10,8 +10,9 @@
 const char* ssid = "NoozAboode";
 const char* password = "bruhbruh";
 
-// Python Server Details
-const char* serverUrl = "http://192.168.1.X:5000/distance"; 
+// Narrator server (narrator/server.js) on the laptop. Use the address it prints at startup
+// ("ESP8266: set serverUrl to ..."); the laptop must be on the same Wi-Fi as this board.
+const char* serverUrl = "http://10.44.148.136:5000/distance";
 
 // Pin Definitions
 const int trigPin = 12;   // D6 maps to GPIO 12

@@ -4,6 +4,7 @@
 
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 const path = require('path');
 const http = require('http');
 const https = require('https');
@@ -70,12 +71,24 @@ function lanAddresses() {
 }
 
 // Self-signed cert so phones on the LAN get a secure context (required for camera access).
+// The Mac's Bonjour name (e.g. NoozMBP.local): phones on the same Wi-Fi can open
+// https://<name>.local:8443 instead of an IP that changes.
+function localHostname() {
+  const h = os.hostname().replace(/\.local$/i, '').split('.')[0];
+  return h ? `${h}.local` : null;
+}
+
 function ensureCert() {
   const key = path.join(CERTS, 'key.pem');
   const cert = path.join(CERTS, 'cert.pem');
-  if (!fs.existsSync(key) || !fs.existsSync(cert)) {
+  const mdnsName = localHostname();
+  // Rebuild a certificate that doesn't name this Mac's .local address. Not rebuilt when the IP
+  // changes: the phone would have to accept a new certificate warning every time.
+  const missingName = fs.existsSync(cert) && mdnsName
+    && !(() => { try { return new crypto.X509Certificate(fs.readFileSync(cert)).subjectAltName.includes(`DNS:${mdnsName}`); } catch { return false; } })();
+  if (!fs.existsSync(key) || !fs.existsSync(cert) || missingName) {
     fs.mkdirSync(CERTS, { recursive: true });
-    const san = ['DNS:localhost', 'IP:127.0.0.1', ...lanAddresses().map((ip) => `IP:${ip}`)].join(',');
+    const san = ['DNS:localhost', ...(mdnsName ? [`DNS:${mdnsName}`] : []), 'IP:127.0.0.1', ...lanAddresses().map((ip) => `IP:${ip}`)].join(',');
     try {
       execFileSync('openssl', [
         'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-sha256', '-days', '365',
@@ -279,7 +292,52 @@ function takeEarlySpeech(text) {
   return entry.job;
 }
 
+// ---------- distance sensor (ESP8266) ----------
+// The ESP8266 POSTs `distance=<metres>` or `distance=Out_of_Range` (form-encoded) about every
+// 200 ms. The latest reading is pushed to every open phone over Server-Sent Events, where
+// public/beeper.js turns it into proximity beeps.
+let lastDistance = null;            // { metres: number|null, at: epoch ms }
+const distanceClients = new Set();  // open SSE responses
+
+function readText(req, limit = 4096) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.setEncoding('utf8');
+    req.on('data', (c) => { body += c; if (body.length > limit) { reject(new Error('Payload too large')); req.destroy(); } });
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
+// POST /distance  distance=0.420 | distance=Out_of_Range  ->  204
+async function postDistance(req, res) {
+  let value;
+  try { value = new URLSearchParams(await readText(req)).get('distance'); } catch (e) { return send(res, 400, e.message); }
+  let metres;
+  if (value === 'Out_of_Range') metres = null;
+  else if (value !== null && value.trim() !== '' && Number.isFinite(Number(value)) && Number(value) >= 0) metres = Number(value);
+  else return send(res, 400, 'Expected distance=<metres> or distance=Out_of_Range');
+  lastDistance = { metres, at: Date.now() };
+  const event = `data: ${JSON.stringify(lastDistance)}\n\n`;
+  for (const client of distanceClients) client.write(event);
+  res.writeHead(204);
+  res.end();
+}
+
+// GET /api/distance/stream  ->  text/event-stream of { metres, at, ageMs? }
+function distanceStream(req, res) {
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
+  res.flushHeaders();
+  // The replayed reading may be old; send its age (phone and laptop clocks can differ).
+  if (lastDistance) res.write(`data: ${JSON.stringify({ ...lastDistance, ageMs: Date.now() - lastDistance.at })}\n\n`);
+  distanceClients.add(res);
+  const keepAlive = setInterval(() => res.write(': keep-alive\n\n'), 15000);
+  res.on('close', () => { clearInterval(keepAlive); distanceClients.delete(res); });
+}
+
 function handler(req, res) {
+  if (req.method === 'POST' && req.url.startsWith('/distance')) return postDistance(req, res);
+  if (req.method === 'GET' && req.url.startsWith('/api/distance/stream')) return distanceStream(req, res);
   if (req.method === 'POST' && req.url.startsWith('/api/describe')) return describe(req, res);
   if (req.method === 'POST' && req.url.startsWith('/api/speak')) return speak(req, res);
   if (req.method === 'GET' || req.method === 'HEAD') return serveStatic(req, res);
@@ -294,9 +352,24 @@ http.createServer(handler).listen(HTTP_PORT, '0.0.0.0', () => {
   console.log(`  Desktop:  http://localhost:${HTTP_PORT}`);
 });
 
+// Plain-HTTP port for the ESP8266 (it can't verify our self-signed HTTPS certificate).
+// Same routes as the other ports; /distance also works on HTTP_PORT.
+const DISTANCE_PORT = Number(process.env.DISTANCE_PORT || 5000);
+const distanceServer = http.createServer(handler);
+distanceServer.on('error', (e) => {
+  if (e.code !== 'EADDRINUSE') throw e;
+  console.log(`  ESP8266:  port ${DISTANCE_PORT} is in use${DISTANCE_PORT === 5000 && process.platform === 'darwin' ? ' (on macOS usually the AirPlay Receiver:'
+    + ' System Settings > General > AirDrop & Handoff > AirPlay Receiver off)' : ''}.`);
+  console.log(`            Or point the sketch at port ${HTTP_PORT}: http://${lanAddresses()[0] || '<lan-ip>'}:${HTTP_PORT}/distance`);
+});
+distanceServer.listen(DISTANCE_PORT, '0.0.0.0', () => {
+  console.log(`  ESP8266:  set serverUrl to http://${lanAddresses()[0] || '<lan-ip>'}:${DISTANCE_PORT}/distance`);
+});
+
 const tls = ensureCert();
 if (tls) {
   https.createServer(tls, handler).listen(HTTPS_PORT, '0.0.0.0', () => {
+    if (localHostname()) console.log(`  Phone:    https://${localHostname()}:${HTTPS_PORT}   (same address even when the IP changes)`);
     for (const ip of lanAddresses()) console.log(`  Phone:    https://${ip}:${HTTPS_PORT}   (accept the certificate warning)`);
     console.log('');
   });
