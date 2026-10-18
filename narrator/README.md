@@ -7,6 +7,7 @@ A phone web app that streams the camera to the [Perceptron](https://docs.percept
 ```sh
 cd narrator
 echo 'PERCEPTRON_API_KEY=your_key_here' > .env   # or export it
+echo 'ELEVENLABS_API_KEY=your_key_here' >> .env  # optional: spoken alerts
 node server.js
 ```
 
@@ -22,6 +23,8 @@ To get a real HTTPS URL instead, which also works off your Wi-Fi, run a tunnel t
 ## Use
 
 - **Start / Stop**: opens the rear camera and begins narrating. The app uses the widest view it can get: the ultra-wide lens when the browser offers it (iOS Safari lists it as "Back Ultra Wide Camera"), otherwise the lowest zoom, at 4:3 so the full sensor is used. The top bar shows which camera is in use.
+- **Voice**: speaks each new alert with ElevenLabs (`eleven_v4_turbo`). By default alerts are queued and spoken in order, with none skipped. The top bar shows generation time and how many clips are waiting. Requires `ELEVENLABS_API_KEY`; set `ELEVENLABS_VOICE_ID` to use a different voice.
+- **Interrupt**: when on, a new alert cuts off the one being spoken and skips anything queued, so you always hear the latest.
 - **Frame every**: how often a frame is sent (default 0.4 s). Up to 3 requests run at once. The top bar shows how long the last reply took, and how much of that was the model.
 - **⇄**: switches between the front and rear cameras.
 

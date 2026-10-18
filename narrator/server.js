@@ -1,6 +1,6 @@
-// Live Scene Narrator: serves the phone UI and proxies camera frames to the
-// Perceptron vision-language API, streaming the description back as plain text.
-// Zero dependencies. Run: PERCEPTRON_API_KEY=... node server.js
+// Live Scene Narrator: serves the phone UI, proxies camera frames to the Perceptron
+// vision-language API, and proxies alert text to ElevenLabs text-to-speech. API keys stay here.
+// Zero dependencies. Run: PERCEPTRON_API_KEY=... [ELEVENLABS_API_KEY=...] node server.js
 
 const fs = require('fs');
 const os = require('os');
@@ -25,6 +25,15 @@ if (!API_KEY) {
   console.error('Get a key at https://platform.perceptron.inc/');
   process.exit(1);
 }
+
+// Speech is optional: without a key, /api/speak answers 503 and the page stays silent.
+// eleven_v4_turbo: ElevenLabs' most realistic real-time model (~100 ms inference). The
+// voice is a default (premade) one, which ElevenLabs lists among the fastest kinds.
+const TTS_KEY = process.env.ELEVENLABS_API_KEY;
+const TTS_MODEL = process.env.ELEVENLABS_MODEL || 'eleven_v4_turbo';
+const TTS_VOICE = process.env.ELEVENLABS_VOICE_ID || 'JBFqnCBsd6RMkjVDRZzb';
+const TTS_FORMAT = process.env.ELEVENLABS_FORMAT || 'mp3_44100_128';
+const TTS_URL = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(TTS_VOICE)}/stream?output_format=${TTS_FORMAT}`;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -152,14 +161,61 @@ async function describe(req, res) {
   res.end((json.choices?.[0]?.message?.content || '').trim());
 }
 
+// POST /api/speak  { text }  ->  audio/mpeg, streamed through from ElevenLabs as it is generated.
+// Server-Timing reports ElevenLabs' time to first byte.
+async function speak(req, res) {
+  if (!TTS_KEY) return send(res, 503, 'Voice is off: set ELEVENLABS_API_KEY in narrator/.env');
+  let text;
+  try { text = String((await readJson(req, 64 * 1024)).text || '').trim().slice(0, 500); } catch (e) { return send(res, 400, `Bad request: ${e.message}`); }
+  if (!text) return send(res, 400, 'Expected { text }');
+
+  const abort = new AbortController();
+  res.on('close', () => abort.abort());
+  const t0 = performance.now();
+  let upstream;
+  try {
+    upstream = await fetch(TTS_URL, {
+      method: 'POST',
+      headers: { 'xi-api-key': TTS_KEY, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
+      body: JSON.stringify({ text, model_id: TTS_MODEL, language_code: 'en' }),
+      signal: abort.signal,
+    });
+  } catch (e) {
+    if (abort.signal.aborted) return;
+    return send(res, 502, `ElevenLabs error: ${e.message}`);
+  }
+  if (!upstream.ok) {
+    const detail = await upstream.text().catch(() => '');
+    console.error(`ElevenLabs ${upstream.status}: ${detail.slice(0, 500)}`);
+    const status = upstream.status === 429 ? 429 : 502;
+    return send(res, status, `ElevenLabs ${upstream.status}: ${detail.slice(0, 300)}`);
+  }
+
+  res.writeHead(200, {
+    'Content-Type': upstream.headers.get('content-type') || 'audio/mpeg',
+    'Cache-Control': 'no-store',
+    'Server-Timing': `tts;dur=${Math.round(performance.now() - t0)}`,
+  });
+  try {
+    for await (const chunk of upstream.body) res.write(chunk);
+  } catch (e) {
+    if (!abort.signal.aborted) console.error('ElevenLabs stream error:', e.message);
+  }
+  res.end();
+}
+
 function handler(req, res) {
   if (req.method === 'POST' && req.url.startsWith('/api/describe')) return describe(req, res);
+  if (req.method === 'POST' && req.url.startsWith('/api/speak')) return speak(req, res);
   if (req.method === 'GET' || req.method === 'HEAD') return serveStatic(req, res);
   send(res, 405, 'Method not allowed');
 }
 
 http.createServer(handler).listen(HTTP_PORT, '0.0.0.0', () => {
   console.log(`\nLive Scene Narrator  (model: ${MODEL})`);
+  console.log(TTS_KEY
+    ? `  Voice:    ElevenLabs ${TTS_MODEL}, voice ${TTS_VOICE}, ${TTS_FORMAT}`
+    : '  Voice:    off (set ELEVENLABS_API_KEY in narrator/.env to enable)');
   console.log(`  Desktop:  http://localhost:${HTTP_PORT}`);
 });
 

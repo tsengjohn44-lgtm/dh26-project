@@ -111,6 +111,15 @@ html, body {
 }
 .start.running { background: var(--stop); color: var(--fg); }
 
+.toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 15px;
+}
+.toggle { display: flex; align-items: center; gap: 8px; }
+.toggle input { width: 22px; height: 22px; margin: 0; accent-color: var(--accent); }
+
 .gap {
   display: flex;
   flex-direction: column;

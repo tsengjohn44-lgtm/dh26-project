@@ -2,7 +2,7 @@
 
 Guide for AI coding agents working in this repo. It describes the code as it exists and the plan for what comes next. `CLAUDE.md` only imports this file, so every agent reads the same guide.
 
-> **Stack note.** An earlier plan for this project used Next.js/TypeScript on Vercel, Grok text-to-speech, and "rough distances" in speech. **That is not what was built**: the code is a zero-dependency Node server plus static HTML/JS in `narrator/`, with no speech output. Distances were deliberately removed, except stair counts. Don't start a Next.js migration or add text-to-speech without asking the team; both were dropped on purpose (see "Decisions").
+> **Stack note.** An earlier plan for this project used Next.js/TypeScript on Vercel, Grok text-to-speech, and "rough distances" in speech. **That is not what was built**: the code is a zero-dependency Node server plus static HTML/JS in `narrator/`. Speech uses **ElevenLabs** (not Grok). Distances were deliberately removed, except stair counts. Don't start a Next.js migration or switch speech providers without asking the team (see "Decisions").
 
 ---
 
@@ -22,7 +22,11 @@ Rules for the output:
 - If nothing new and important is visible, the model replies **`n/a`**. The app then shows nothing new.
 - The app must **not repeat** what it has already said about the current view.
 
-There is no speech output. Text-to-speech was built and then removed at the user's request. The UI is a large high-contrast caption with an `aria-live` region.
+Each new alert is also **spoken with ElevenLabs** (`eleven_v4_turbo`):
+- **Queue mode** (default): every alert is spoken, in order, none dropped. Audio for each alert starts generating as soon as it is queued, so clips play back to back.
+- **Interrupt mode** (toggle): a new alert cuts off the clip that is playing and drops older queued clips.
+
+Visually, the UI is a large high-contrast caption with an `aria-live` region.
 
 ## 2. Run it
 
@@ -37,7 +41,14 @@ node server.js                            # Node >= 18, no npm install
   - Phones only allow camera access over HTTPS.
   - The certificate is tied to the LAN IP at the time it was made. If the IP changes, delete `narrator/certs/` and restart.
 - Off-Wi-Fi alternative: `npx localtunnel --port 8080` or `cloudflared tunnel --url http://localhost:8080`.
-- Environment variables: `PERCEPTRON_API_KEY` (required), `PERCEPTRON_MODEL` (default `perceptron-mk1.5`), `PORT` (8080), `HTTPS_PORT` (8443).
+- Environment variables (in `narrator/.env` or the shell):
+  - `PERCEPTRON_API_KEY` (required)
+  - `PERCEPTRON_MODEL` (default `perceptron-mk1.5`)
+  - `ELEVENLABS_API_KEY` (optional; without it the app runs silently and `/api/speak` returns 503)
+  - `ELEVENLABS_MODEL` (default `eleven_v4_turbo`)
+  - `ELEVENLABS_VOICE_ID` (default `JBFqnCBsd6RMkjVDRZzb`, a default ElevenLabs voice)
+  - `ELEVENLABS_FORMAT` (default `mp3_44100_128`)
+  - `PORT` (8080), `HTTPS_PORT` (8443)
 - After changing files under `public/`, hard-refresh the phone. After changing `server.js` or `prompt.js`, restart the server.
 
 ## 3. Repo map
@@ -58,6 +69,7 @@ narrator/
     style.css        dark, high-contrast, phone-first layout (safe-area insets)
     app.js           camera, frame capture, request scheduler, view-change detection, UI updates
     filter.js        shared by browser and Node: n/a and repeat filtering, viewChange()
+    speech.js        ElevenLabs speech: audio queue, prefetch, interrupt, Web Audio playback (window.Speech)
 ```
 
 ## 4. Architecture and data flow
@@ -102,6 +114,10 @@ handleReply():
   - On success it returns the trimmed `choices[0].message.content` as `text/plain`, with a `Server-Timing: api;dur=<ms>` header.
   - It passes 429 and 503 statuses through with `Retry-After`. Other upstream errors become 502. Bad input gets a 400.
   - It aborts the upstream request if the client disconnects.
+- `speak()` handles `POST /api/speak` with `{text}`:
+  - It calls ElevenLabs `POST /v1/text-to-speech/{voice}/stream?output_format=…` with `model_id` and `language_code: 'en'`, authenticated with the `xi-api-key` header.
+  - It streams the MP3 bytes through to the browser, with `Server-Timing: tts;dur=<time to first byte>`.
+  - It returns 503 without a key, passes 429 through, and turns other errors into 502.
   - The server does **no filtering**. All "is this worth showing" logic lives in the browser, because only the browser knows what is currently on screen while several requests are in flight.
 
 ### `narrator/prompt.js`
@@ -125,6 +141,15 @@ handleReply():
   - If at least 60% of the reply's content words appear in an earlier alert, it's a repeat.
   - Exceptions, which make it new: a number not seen before (Room 214 → Room 215), or the reply now says "close" when the earlier alert didn't.
 - `viewChange(a, b)` returns 1 − Pearson correlation of two grayscale thumbnails. 0 means the same view, about 1 means unrelated. It ignores exposure changes.
+
+### `narrator/public/speech.js` (`window.Speech`)
+- `unlock()` must run synchronously inside a user tap: `start()` calls it before any `await`, and the Voice toggle calls it too. It creates and resumes the `AudioContext` and plays one silent sample, which completes the iOS unlock.
+- `say(text)` adds `{text, audio: synthesize()}` to the queue. Generation starts at once (one retry on failure); then `pump()` runs.
+- `pump()` plays the queue head when its audio is ready, then the next. It always plays in order, even if a later clip finished generating first.
+- `cancel()` bumps `generation`, empties the queue and stops the current clip. Interrupt mode calls it before queueing; so does `stop()`.
+- A 503 from the server (no key) turns voice off and shows the reason in the voice chip.
+- `app.js` calls `Speech.say(text)` for every new alert shown. Toggle state is remembered on the device (`localStorage` keys `voice` and `interrupt`).
+- Tested in Node with fake fetch and fake Web Audio, 9 checks: ordering when generation finishes out of order, no loss, the next clip starts as soon as the previous ends, interrupt cut-off, retry, cancel, and voice off. **Not yet tested with a real ElevenLabs key or on a phone.**
 
 ### `narrator/public/app.js`
 - **Camera:** `openCamera()` requests 1920×1440 at 4:3. On most phones that uses the full sensor; 16:9 crops it. Then `useWidestLens()`:
@@ -180,7 +205,9 @@ handleReply():
 | Stairs: always up/down, with visual cues in the prompt | User requirement. Cues: going up shows the step fronts rising; going down shows step tops and edges dropping away. At temperature 0.2 on 6 stair photos (36 replies), direction was stated 36/36 and correct 30/36. All 6 errors were one side-on photo whose direction is hard to judge. |
 | Stair count × 0.75 in code (`STAIR_COUNT_FACTOR`) | User wants underestimates. The model overcounts short flights consistently (5 for 2 gate steps, 10 for 8) and prompt wording didn't fix it. Overestimates went from 12/36 to 4/36; the remaining ones are on a 2-step flight. Long flights are already undercounted (15 for ~25). |
 | Focus on center and foreground | User requirement. Old vs new prompt on 12 photos: dropped edge and distant details (a bike-lane sign at the edge, people far down a concourse, a building under construction behind a fence). Signs, doors and stairs straight ahead are still reported. |
-| No text-to-speech | Removed at the user's request. (It also lagged badly: about 10 s per utterance against about 1.3 s per description.) |
+| ElevenLabs `eleven_v4_turbo` for speech | The user asked for maximum realism and generation speed, with unlimited credits. Per ElevenLabs' model docs (Oct 2026), v4 Turbo is their most realistic real-time model at about 100 ms median inference. Flash v2.5 is about 75 ms but lower quality; Eleven v4 is the highest quality but not real-time. The earlier browser `speechSynthesis` version was removed because it lagged about 10 s behind. |
+| Speech queue: in order, nothing dropped, every clip generated as soon as it is queued | User requirement: no alert is lost. Generating ahead means the next clip is ready when the current one ends. Interrupt mode is opt-in. In queue mode, speech can fall behind if alerts come faster than they can be spoken; the voice chip shows how many are queued. |
+| Web Audio API for playback, unlocked in the Start tap | iOS Safari only plays sound started from a user tap. One `AudioContext` resumed in the tap can play every later clip; new `<audio>` elements created later would be blocked. |
 | Zero dependencies | Runs anywhere with Node 18+. No build step. |
 
 ## 8. Testing and verification
@@ -258,5 +285,5 @@ If you add a proper harness, put it in `narrator/eval/` and keep images out of g
 ## 12. Open questions for the team
 
 - Is the earlier Next.js/Vercel plan dropped for good, or is a migration of `narrator/` still wanted?
-- Should speech come back in a form that keeps up? For example: speak only hazards, cancel stale speech, and keep utterances under about 3 s.
+- Speech in queue mode can fall behind during busy stretches. Should hazards automatically interrupt, and should a hazard jump ahead of queued text such as signs?
 - Where will this be deployed for the demo? Hosting needs real HTTPS plus the API key kept server-side.

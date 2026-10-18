@@ -12,6 +12,9 @@ const thumbCtx = thumbCanvas.getContext('2d', { willReadFrequently: true });
 const statusEl = $('status');
 const latencyEl = $('latency');
 const lensEl = $('lens');
+const voiceEl = $('voiceStatus');
+const voiceBox = $('voice');
+const interruptBox = $('interrupt');
 const currentEl = $('current');
 const historyEl = $('history');
 const startBtn = $('start');
@@ -220,6 +223,7 @@ function handleReply(seq, view, reply, totalMs, apiMs) {
   currentEl.textContent = text;
   currentEl.dataset.alert = text;
   said = [...said, text].slice(-MAX_SAID);
+  Speech.say(text);
 }
 
 function pushHistory(text) {
@@ -246,6 +250,7 @@ function setStatus(text, live) {
 }
 
 async function start() {
+  Speech.unlock(); // must happen synchronously in the Start tap, before any await (iOS)
   if (!navigator.mediaDevices?.getUserMedia) {
     currentEl.textContent = 'Camera unavailable. Open this page over HTTPS (or localhost).';
     return;
@@ -282,6 +287,7 @@ function stop() {
   resetView();
   for (const c of inFlight) c.abort();
   inFlight.clear();
+  Speech.cancel();
   stopCamera();
   releaseWakeLock();
   startBtn.textContent = 'Start';
@@ -307,6 +313,41 @@ $('flip').addEventListener('click', async () => {
     try { await openCamera(); } catch (e) { currentEl.textContent = `Camera error: ${e.message}`; }
   }
 });
+
+// ---------- voice ----------
+
+const loadPref = (key, fallback) => { try { const v = localStorage.getItem(key); return v === null ? fallback : v === '1'; } catch { return fallback; } };
+const savePref = (key, on) => { try { localStorage.setItem(key, on ? '1' : '0'); } catch { /* storage blocked */ } };
+
+voiceBox.checked = loadPref('voice', true);
+interruptBox.checked = loadPref('interrupt', false);
+Speech.enabled = voiceBox.checked;
+Speech.interrupt = interruptBox.checked;
+
+voiceBox.addEventListener('change', () => {
+  Speech.unlock(); // a tap: also a chance to unlock audio on iOS
+  Speech.enabled = voiceBox.checked;
+  savePref('voice', voiceBox.checked);
+  renderVoice();
+});
+interruptBox.addEventListener('change', () => {
+  Speech.interrupt = interruptBox.checked;
+  savePref('interrupt', interruptBox.checked);
+});
+
+function renderVoice() {
+  const { lastMs, lastError } = Speech.stats;
+  if (!Speech.enabled) {
+    if (lastError && voiceBox.checked) voiceBox.checked = false; // server has no ElevenLabs key
+    voiceEl.textContent = lastError ? `voice off: ${lastError.slice(0, 60)}` : '';
+    return;
+  }
+  const waiting = Math.max(0, Speech.pending - 1);
+  voiceEl.textContent = lastError
+    ? `voice error: ${lastError.slice(0, 60)}`
+    : [lastMs && `voice ${lastMs} ms`, waiting && `${waiting} queued`].filter(Boolean).join(' · ');
+}
+Speech.onChange = renderVoice;
 
 const showInterval = () => { intervalOut.textContent = `${(Number(intervalInput.value) / 1000).toFixed(1)}s`; };
 intervalInput.addEventListener('input', showInterval);

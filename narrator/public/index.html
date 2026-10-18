@@ -17,6 +17,7 @@
     <span id="status" class="status">Idle</span>
     <span id="latency" class="latency"></span>
     <span id="lens" class="latency"></span>
+    <span id="voiceStatus" class="latency"></span>
     <button id="flip" class="icon" aria-label="Switch camera">⇄</button>
   </header>
 
@@ -26,7 +27,10 @@
   </section>
 
   <footer class="controls">
-    <span></span>
+    <div class="toggles">
+      <label class="toggle"><input id="voice" type="checkbox" checked> <span>Voice</span></label>
+      <label class="toggle"><input id="interrupt" type="checkbox"> <span>Interrupt</span></label>
+    </div>
     <button id="start" class="start">Start</button>
     <label class="gap">
       <span>Frame every <output id="intervalOut">0.4s</output></span>
@@ -35,6 +39,7 @@
   </footer>
 
   <script src="filter.js"></script>
+  <script src="speech.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
