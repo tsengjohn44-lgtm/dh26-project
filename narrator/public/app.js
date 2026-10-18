@@ -240,7 +240,10 @@ function judgeBlur(thumb, score, now) {
 function maybeHint(now) {
   if (blurSince === null || now - blurSince < HINT_AFTER_MS || now - lastHint < HINT_COOLDOWN_MS) return;
   lastHint = now;
-  if (Speech.enabled) Speech.say(HINT_TEXT); // spoken only: not a scene alert, not added to `said`
+  if (Speech.enabled) { // spoken only: not a scene alert, not added to `said`
+    Speech.say(HINT_TEXT);
+    logReply({ kind: 'hint', text: HINT_TEXT });
+  }
 }
 
 function resetBlur() {
@@ -323,6 +326,7 @@ async function sendFrame(id, frame) {
   } catch (e) {
     if (id !== runId) return; // stopped: aborts are expected
     pausedUntil = performance.now() + Math.max(2000, e.retryAfterMs || 0);
+    logReply({ kind: 'error', text: e.message || String(e) });
     setStatus('Error', false);
     currentEl.textContent = e.message || String(e);
     currentEl.classList.add('error');
@@ -332,8 +336,15 @@ async function sendFrame(id, frame) {
   }
 }
 
+// Every reply and what was done with it goes to the History log (log.js), including those the
+// filter dropped. `typeof` check: the app still runs if log.js failed to load.
+function logReply(entry) { if (typeof Log !== 'undefined') Log.add(entry); }
+
 function handleReply(seq, view, reply, totalMs, apiMs) {
-  if (seq < shownSeq || view !== viewId) return; // a newer frame was answered, or the view changed
+  if (seq < shownSeq || view !== viewId) { // a newer frame was answered, or the view changed
+    logReply({ kind: 'late', text: reply, ms: totalMs });
+    return;
+  }
   shownSeq = seq;
   latencyEl.textContent = Number.isFinite(apiMs)
     ? `${Math.round(totalMs)} ms (model ${Math.round(apiMs)})`
@@ -344,6 +355,7 @@ function handleReply(seq, view, reply, totalMs, apiMs) {
   // Filter (filter.js) drops "n/a" and restatements of what was already shown for this view.
   // It checks the current `said`, which may be newer than the one this request was sent with.
   const { text, reason } = Filter.classifyReply(reply, said);
+  logReply(text ? { kind: 'alert', text, ms: totalMs } : { kind: reason, text: reply, ms: totalMs });
   if (!text) {
     // Say why nothing changed: the model saw nothing new, or it repeated an earlier alert.
     setStatus(reason === 'repeat' ? 'Live · already said' : 'Live · nothing new', true);
@@ -448,9 +460,10 @@ async function finishRecording() {
     // Same cautious stair count as alerts (×0.75, rounded down): the model overcounts.
     const answer = Filter.fixStairLabel(Filter.cautiousStairCount((await res.text()).replace(/\s+/g, ' ').trim()));
     latencyEl.textContent = `answer ${Math.round(performance.now() - t0)} ms`;
-    if (answer) showAnswer(answer);
+    if (answer) { logReply({ kind: 'answer', text: answer, ms: performance.now() - t0 }); showAnswer(answer); }
     setStatus('Live', true);
   } catch (e) {
+    logReply({ kind: 'error', text: `Question: ${e.message || e}` });
     setStatus('Could not answer', false);
     currentEl.textContent = e.message || String(e);
   } finally {
@@ -542,9 +555,14 @@ async function sendSlow(id, seq, view, { image, said: saidThen, sensor }, t0) {
 function handleSlowReply(seq, view, reply, t0) {
   const age = performance.now() - t0;
   slowStats.ms = Math.round(age);
-  if (view !== viewId || age > SLOW_MAX_AGE_MS || seq < shownSlowSeq) { slowStats.stale++; return; }
+  if (view !== viewId || age > SLOW_MAX_AGE_MS || seq < shownSlowSeq) {
+    slowStats.stale++;
+    logReply({ kind: 'late', text: reply, ms: age, mode: 'low' });
+    return;
+  }
   shownSlowSeq = seq;
-  const { text } = Filter.classifyReply(reply, said, { refine: true });
+  const { text, reason } = Filter.classifyReply(reply, said, { refine: true });
+  logReply(text ? { kind: 'correction', text, ms: age, mode: 'low' } : { kind: reason, text: reply, ms: age, mode: 'low' });
   if (!text) { slowStats.suppressed++; return; }
   slowStats.spoken++;
   showAlert(text);

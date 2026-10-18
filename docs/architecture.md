@@ -7,6 +7,7 @@
 │ index.html · style.css · ui.js        screen, settings, tap-to-repeat │
 │ app.js     camera, blur gate, view change, request scheduler, replies │
 │ filter.js  n/a + repeat filtering, sharpness, view-change measure     │
+│ log.js     history of every reply, kept on the phone (🕘 History)     │
 │ speech.js  ElevenLabs audio queue, streaming playback (Web Audio)     │
 │ beeper.js  proximity beeps + latest valid reading for the AI requests │
 │ recorder.js microphone → 16 kHz WAV for spoken questions (🎤 Ask)     │
@@ -69,10 +70,11 @@ Phones can open `https://<mac-name>.local:8443` (e.g. `https://NoozMBP.local:844
 | `speech.js` | the audio queue, with each clip's chunks as they arrive |
 | `beeper.js` | the latest distance reading and its time (`Beeper.reading` gives it to `app.js` only when valid and fresh) |
 | `recorder.js` | microphone samples while a question is being recorded, and the end-of-speech detector |
+| `log.js` | the last 1,000 replies and what was done with each (shown, repeat, n/a, late, error), saved to `localStorage` |
 | `server.js` | the latest distance reading, the ESP health summary, early speech jobs (15 s) |
-| `localStorage` (phone) | settings: voice, interrupt, pauseWhileSpeaking, safetyLabels, reasoning, beeps, beepVolume, beepIntensity, sensorToAi, sensorHeight, debug |
+| `localStorage` (phone) | settings: voice, interrupt, pauseWhileSpeaking, safetyLabels, reasoning, beeps, beepVolume, beepIntensity, sensorToAi, sensorHeight, debug, logFilter; the reply history (`replyLog`) |
 
-Perceptron is **stateless**: every request carries its own context. Nothing is remembered between requests except what the app sends.
+Perceptron is **stateless**: every request carries its own context. Nothing is remembered between requests except what the app sends. The server keeps no record of replies; the only history is on the phone (`log.js`).
 
 ## Design rules
 

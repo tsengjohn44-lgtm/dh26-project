@@ -78,6 +78,7 @@ narrator/
     ui.js            UI behaviour: settings sheet, Reasoning segmented control, tap-to-repeat, hazard highlight
     app.js           camera, frame capture, request scheduler, view-change detection, UI updates
     filter.js        shared by browser and Node: n/a and repeat filtering, viewChange()
+    log.js           history of every reply and its outcome, in localStorage (window.Log; 🕘 History sheet)
     speech.js        ElevenLabs speech: audio queue, prefetch, interrupt, Web Audio playback (window.Speech)
     beeper.js        proximity beeps from the distance sensor: curve, scheduler, ducking (window.Beeper)
     recorder.js      microphone → 16 kHz WAV (base64) for spoken questions, end-of-speech detection (window.Recorder)
@@ -226,6 +227,7 @@ handleReply():
   - Diagnostics: `#debugBtn` as a switch row (`aria-pressed`)
   - The timing chips `#latency`, `#lens` and `#voiceStatus` moved into the diagnostics overlay.
 - **All element IDs used by `app.js` were kept**, so `app.js` didn't change for the redesign, and its 73 fake-browser checks pass unchanged.
+- **History (🕘 `#historyBtn`, `#logSheet`):** `log.js` keeps the last 1,000 replies on the phone (`replyLog`), each with its outcome: `alert`, `correction`, `answer`, `hint`, or dropped as `repeat`, `n/a`, `late`, `error`. `app.js` `logReply()` is called at each decision point. The server stores no replies. Details in `docs/ui.md`.
 - **`ui.js`** (loaded after `app.js`; if it fails, the controls still work as plain form controls):
   - Sheet: open/close via ⚙, ✕, backdrop, Escape, or a swipe down on the handle/header; `aria-expanded` and focus are handled.
   - Segmented control: sets `#reasoning` and dispatches `change`, so `app.js` saves it.
