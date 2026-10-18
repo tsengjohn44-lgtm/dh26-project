@@ -71,10 +71,23 @@ async function openStream(constraints) {
   return s;
 }
 
+// The camera on the requested side. `exact` matters: with only `ideal`, the browser weighs
+// facingMode against the 1920×1440 size request, and on a phone whose front camera can't do that
+// size it kept the back camera when asked for the front one (the ⇄ switch did nothing). A laptop
+// webcam has no side, so `exact` fails there and any camera is used instead.
+async function openFacing(side) {
+  try {
+    return await openStream({ facingMode: { exact: side } });
+  } catch (e) {
+    if (e.message === 'camera reopened') throw e;
+    return openStream({ facingMode: { ideal: side } });
+  }
+}
+
 async function openCamera() {
   stopCamera();
   try {
-    stream = await openStream({ facingMode: { ideal: facing } });
+    stream = await openFacing(facing);
     if (facing === 'environment') await useWidestLens();
   } catch (e) {
     if (e.message === 'camera reopened') return; // superseded by a newer stop/reopen
@@ -100,7 +113,7 @@ async function useWidestLens() {
         stream = await openStream({ deviceId: { exact: wide.deviceId } });
       } catch (e) {
         if (e.message === 'camera reopened') throw e;
-        stream = await openStream({ facingMode: { ideal: facing } });
+        stream = await openFacing(facing);
       }
     }
   } catch (e) {
@@ -651,16 +664,29 @@ function stopFrameWatch() {
   frameWatch = null;
 }
 
+// The camera switch (⇄) only shows with diagnostics on: the app always uses the widest rear
+// camera, since the front one can't see where a blind pedestrian is walking. (style.display,
+// not `hidden`: the .icon rule sets display and would override the hidden attribute.)
+const showFlip = (on) => { $('flip').style.display = on ? '' : 'none'; };
+
 function setDebug(on) {
   debugMode = on;
   savePref('debug', on);
   $('debug').hidden = !on;
   $('debugBtn').setAttribute('aria-pressed', String(on));
+  showFlip(on);
+  if (!on && facing === 'user') { // leaving diagnostics on the front camera: back to the rear one
+    facing = 'environment';
+    applyPreviewTransform();
+    resetView();
+    if (stream) reopenCamera();
+  }
   if (on) { watchFrames(); renderDiag(); } else stopFrameWatch();
 }
 $('debugBtn').addEventListener('click', () => setDebug(!debugMode));
 $('debug').hidden = !debugMode;
 $('debugBtn').setAttribute('aria-pressed', String(debugMode));
+showFlip(debugMode);
 setInterval(renderDiag, 500);
 
 async function start() {
@@ -702,6 +728,7 @@ function resetView() {
 }
 
 function stop() {
+  endDataSession(); // before resetView/stopCamera: its stop record reports this session
   running = false;
   runId++;
   resetView();
@@ -790,7 +817,12 @@ pauseBox.addEventListener('change', () => {
 // person's phone is its own series; each Start begins a new session id.
 const dataBox = $('saveData');
 dataBox.checked = loadPref('saveData', false);
-dataBox.addEventListener('change', () => savePref('saveData', dataBox.checked));
+dataBox.addEventListener('change', () => {
+  savePref('saveData', dataBox.checked);
+  if (!sessionId) return;
+  if (dataBox.checked) { lastAlertAt = performance.now(); sendRecord(startRecord()); } // on mid-walk: begin here
+  else if (startSent) { closingRecords(performance.now()).forEach(post); startSent = false; } // off: close it
+});
 
 const randomId = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`);
 const phoneId = (() => {
@@ -801,19 +833,69 @@ const phoneId = (() => {
   } catch { return randomId(); } // storage blocked: a new id for each page load
 })();
 $('phoneIdText').textContent = `This phone: ${phoneId.slice(0, 8)}`;
+// Besides alerts, a session saves a start record, a stop record, and one "quiet" record for each
+// stretch of QUIET_MS or more without a new alert, so a gap in the data reads as quiet walking
+// rather than "app closed?". Shorter gaps are just the spacing between alerts.
+const QUIET_MS = 5000;
 let sessionId = null;
-let logCount = 0;
+let recordCount = 0;      // records sent this session: their order (`n`)
+let alertCount = 0;       // alerts shown this session
+let sessionStartedAt = 0;
+let lastAlertAt = 0;
+let startSent = false;    // a session's records begin with its start record
 
 function startDataSession() {
   sessionId = randomId();
-  logCount = 0;
+  recordCount = 0;
+  alertCount = 0;
+  sessionStartedAt = lastAlertAt = performance.now();
+  startSent = false;
+  sendRecord(startRecord());
+}
+
+function endDataSession() {
+  if (sessionId && startSent && dataBox.checked) closingRecords(performance.now()).forEach(post);
+  sessionId = null;
+}
+
+const startRecord = () => ({
+  type: 'start',
+  reasoning: reasoningSelect.value,
+  style: alertStyle(),
+  intervalMs: Number(intervalInput.value),
+  voice: voiceBox.checked,
+  camera: lensEl.textContent, // e.g. "Back Ultra Wide · 1920×1440"
+});
+
+function closingRecords(now) {
+  const records = [];
+  if (now - lastAlertAt >= QUIET_MS) records.push({ type: 'quiet', seconds: (now - lastAlertAt) / 1000 });
+  records.push({ type: 'stop', seconds: (now - sessionStartedAt) / 1000, alerts: alertCount });
+  return records;
 }
 
 function logAlert(text, source) {
+  const now = performance.now();
+  if (now - lastAlertAt >= QUIET_MS) sendRecord({ type: 'quiet', seconds: (now - lastAlertAt) / 1000 });
+  alertCount++;
+  lastAlertAt = now;
+  sendRecord({ type: 'alert', text, source, reasoning: reasoningSelect.value, style: alertStyle() });
+}
+
+// Sends only while saving is on, and always opens the session with its start record first.
+function sendRecord(record) {
   if (!dataBox.checked || !sessionId) return;
-  const record = { phone: phoneId, session: sessionId, n: ++logCount, text, source, reasoning: reasoningSelect.value, style: alertStyle(), t: new Date().toISOString() };
-  // keepalive: the last alert still gets saved if the page is closed right after it.
-  fetch('/api/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(record), keepalive: true })
+  if (!startSent) {
+    startSent = true;
+    if (record.type !== 'start') post(startRecord());
+  }
+  post(record);
+}
+
+function post(record) {
+  const body = { phone: phoneId, session: sessionId, n: ++recordCount, t: new Date().toISOString(), ...record };
+  // keepalive: the last records still get saved if the page is closed right after them.
+  fetch('/api/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), keepalive: true })
     .catch(() => { /* saving is best-effort; the app keeps working without it */ });
 }
 

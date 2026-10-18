@@ -33,7 +33,7 @@ To get a real HTTPS URL instead, which also works off your Wi-Fi, run a tunnel t
   - **Vision:** Reasoning (Off · Fast+Low · Low · High), Frame every
   - **Proximity sensor:** Beep volume, Intensity
   - **Diagnostics:** the overlay with timing, camera, blur and sensor details
-- **⇄** switches between the front and rear cameras.
+- The app always uses the **widest rear camera** (see Start / Stop). **⇄** (switch to the front camera) only shows with the Diagnostics overlay on.
 
 Details of each setting:
 
@@ -48,7 +48,7 @@ Details of each setting:
 - **Blurry frames are skipped**: if the camera image is blurry (moving, swinging, out of focus), it isn't sent to Perceptron until a sharp one comes along. After 2 s it sends the sharpest frame anyway. If it stays blurry for 3 s, the voice says "Hold the phone steady" (at most every 15 s).
 - **Beeps**: quiet proximity beeps from the ESP8266 distance sensor. Silent beyond 2 m; faint and slow from 2 m, getting louder, faster and higher toward 10 cm, where they're fast and loud. They go quieter while the voice speaks, except at 10 cm or less. **Beep volume** sets the loudness; **Intensity** (0.5×–2×) makes them ramp up sooner (higher) or later (lower). The header shows the distance, "sensor: clear" or "sensor offline".
 - **Frame every**: how often a frame is sent (default 0.4 s). Up to 3 requests run at once. The top bar shows how long the last reply took, and how much of that was the model.
-- **⇄**: switches between the front and rear cameras.
+- **⇄** (Diagnostics overlay only): switches to the front camera and back. Turning Diagnostics off returns to the rear camera. It's hidden otherwise because the front camera can't see where you're walking.
 
 ## How it works
 
@@ -76,14 +76,22 @@ Optional environment variables: `PERCEPTRON_MODEL`, `PORT` (default 8080), `HTTP
 - **Who it came from:** every phone gets a random phone ID (shown under the switch). Each **Start** begins a new session.
 - **In git:** `narrator/data/` is gitignored, so collected data is never committed.
 
-Each line looks like:
+Each session's lines start with a `start` record (settings and the camera in use) and end with a `stop` record (session length and number of alerts). In between are the `alert` records, plus one `quiet` record for each stretch of 5 s or more with no new alert, so a gap in the data means quiet walking, not a closed app. An alert line looks like:
 
 ```json
-{"t":"2026-10-18T08:41:03.112Z","phone":"1e9211ae-…","session":"101af34c-…","n":1,
+{"t":"2026-10-18T08:41:03.112Z","type":"alert","phone":"1e9211ae-…","session":"101af34c-…","n":1,
  "text":"Drop-off: stairs going down ahead, at least 3 steps.",
  "words":["drop-off","stairs","going","down","ahead","at","least","3","steps"],
  "hazard":"drop","positions":["ahead"],"close":false,"stairs":{"direction":"down","minSteps":3},
  "quoted":[],"source":"fast","reasoning":"none","style":"safety","clientTime":"…"}
+```
+
+The other record types look like:
+
+```json
+{"type":"start","reasoning":"none","style":"safety","intervalMs":400,"voice":true,"camera":"Back Ultra Wide · 1440×1920", …}
+{"type":"quiet","seconds":10.2, …}
+{"type":"stop","seconds":600,"alerts":37, …}
 ```
 
 Field notes:

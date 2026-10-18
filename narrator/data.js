@@ -1,5 +1,5 @@
-// Saved descriptions: one JSON record per alert a phone showed, for building a dataset of what
-// the app told people. Only phones with Settings > Data > Save descriptions on send anything
+// Saved descriptions: one JSON record per alert a phone showed, plus start, quiet and stop
+// records per session (see TYPES), for building a dataset of what the app told people. Only phones with Settings > Data > Save descriptions on send anything
 // (POST /api/log); records are appended to narrator/data/<YYYY-MM-DD>.jsonl (gitignored).
 // Text only: no images, no location. Used by server.js; tested by eval/data-test.js.
 
@@ -37,24 +37,56 @@ function parseAlert(text) {
   };
 }
 
+// Record types. Without start/stop/quiet, a gap in the data couldn't tell "nothing to report"
+// from "the app was closed".
+//   alert: an alert the phone showed (text + parsed fields)
+//   start: a session began (settings and camera in use)
+//   quiet: no new alert for `seconds` (QUIET_MS or longer in app.js), one line per stretch
+//   stop:  the session ended after `seconds`, with `alerts` shown
+const TYPES = ['alert', 'start', 'quiet', 'stop'];
+const MAX_SECONDS = 24 * 3600;
+const seconds = (v) => (Number.isFinite(Number(v)) && Number(v) >= 0 ? Math.min(Math.round(Number(v) * 10) / 10, MAX_SECONDS) : null);
+const cleanText = (v, max) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, max) : '');
+
 // body from the phone -> the record to save. Throws on anything that doesn't look like one.
 function buildRecord(body, now = new Date()) {
-  const text = typeof body?.text === 'string' ? body.text.replace(/\s+/g, ' ').trim().slice(0, MAX_TEXT) : '';
-  if (!text || !isId(body.phone) || !isId(body.session)) throw new Error('Expected { phone, session, text }');
+  if (!body || !isId(body.phone) || !isId(body.session)) throw new Error('Expected { phone, session, ... }');
+  const type = body.type === undefined ? 'alert' : body.type;
+  if (!TYPES.includes(type)) throw new Error(`Unknown record type: ${String(type).slice(0, 20)}`);
   const n = Number(body.n);
-  const clientTime = typeof body.t === 'string' && !Number.isNaN(Date.parse(body.t)) ? body.t : null;
-  return {
+  const base = {
     t: now.toISOString(), // server clock: phone clocks can differ
+    type,
     phone: body.phone,
     session: body.session,
-    n: Number.isInteger(n) && n > 0 ? n : null, // order within the session
-    text,
-    ...parseAlert(text),
-    source: SOURCES.includes(body.source) ? body.source : 'fast',
+    n: Number.isInteger(n) && n > 0 ? n : null, // order of records within the session
+  };
+  const clientTime = typeof body.t === 'string' && !Number.isNaN(Date.parse(body.t)) ? body.t : null;
+  const settings = {
     reasoning: REASONING.includes(body.reasoning) ? body.reasoning : null,
     style: STYLES.includes(body.style) ? body.style : null,
-    clientTime,
   };
+
+  if (type === 'alert') {
+    const text = cleanText(body.text, MAX_TEXT);
+    if (!text) throw new Error('Expected { text } for an alert');
+    return { ...base, text, ...parseAlert(text), source: SOURCES.includes(body.source) ? body.source : 'fast', ...settings, clientTime };
+  }
+  if (type === 'start') {
+    return {
+      ...base,
+      ...settings,
+      intervalMs: Number.isInteger(Number(body.intervalMs)) ? Number(body.intervalMs) : null,
+      voice: typeof body.voice === 'boolean' ? body.voice : null,
+      camera: cleanText(body.camera, 80) || null, // e.g. "Back Ultra Wide · 1920×1440"
+      clientTime,
+    };
+  }
+  const secs = seconds(body.seconds);
+  if (secs === null) throw new Error(`Expected { seconds } for a ${type} record`);
+  if (type === 'quiet') return { ...base, seconds: secs, clientTime };
+  const alerts = Number(body.alerts);
+  return { ...base, seconds: secs, alerts: Number.isInteger(alerts) && alerts >= 0 ? alerts : null, clientTime };
 }
 
 // One file per local calendar day, so a day's sessions stay together.

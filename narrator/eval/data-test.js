@@ -71,5 +71,34 @@ check('one file per local day', () => {
   assert.match(D.fileFor(new Date(2026, 9, 18, 23, 30)), /data[\\/]2026-10-18\.jsonl$/);
 });
 
+check('records without a type are alerts (older phones)', () => {
+  assert.strictEqual(D.buildRecord({ ...ok, text: 'Door ahead.' }).type, 'alert');
+});
+
+check('start record keeps settings and camera, no text needed', () => {
+  const r = D.buildRecord({ ...ok, type: 'start', n: 1, reasoning: 'hybrid', style: 'classic', intervalMs: 400, voice: true, camera: 'Back Ultra Wide · 1920×1440' });
+  assert.strictEqual(r.type, 'start');
+  assert.strictEqual(r.reasoning, 'hybrid');
+  assert.strictEqual(r.intervalMs, 400);
+  assert.strictEqual(r.voice, true);
+  assert.strictEqual(r.camera, 'Back Ultra Wide · 1920×1440');
+  assert.strictEqual(r.text, undefined);
+});
+
+check('quiet and stop records carry seconds, rounded to 0.1 s', () => {
+  assert.strictEqual(D.buildRecord({ ...ok, type: 'quiet', seconds: 42.345 }).seconds, 42.3);
+  const stop = D.buildRecord({ ...ok, type: 'stop', seconds: 600, alerts: 37 });
+  assert.strictEqual(stop.seconds, 600);
+  assert.strictEqual(stop.alerts, 37);
+});
+
+check('bad typed records are refused', () => {
+  assert.throws(() => D.buildRecord({ ...ok, type: 'quiet' }));                // no seconds
+  assert.throws(() => D.buildRecord({ ...ok, type: 'quiet', seconds: -1 }));
+  assert.throws(() => D.buildRecord({ ...ok, type: 'stop', seconds: 'soon' }));
+  assert.throws(() => D.buildRecord({ ...ok, type: 'video', text: 'x' }));     // unknown type
+  assert.throws(() => D.buildRecord({ ...ok, type: 'alert' }));                // alert needs text
+});
+
 console.log(failed ? `${failed} failed` : 'all passed');
 process.exit(failed ? 1 : 0);
