@@ -15,6 +15,7 @@ Start with **[architecture.md](architecture.md)**, then read the system you're w
 | [ui.md](ui.md) | Screen layout, settings, accessibility, diagnostics overlay |
 | [server-api.md](server-api.md) | HTTP endpoints, headers, environment variables, HTTPS and `.local` access |
 | [testing.md](testing.md) | How each part was tested, measurement method, test photos, what still needs a real device |
+| [testing-process.md](testing-process.md) | How to test a change: the runner (`narrator/eval/run.cjs`), the API eval, the prompt-change procedure, reading the output |
 
 `AGENTS.md` at the repo root is the working guide for AI coding agents: conventions, decisions, and open questions. These docs explain how the systems work. Where they overlap, the code is the source of truth.
 

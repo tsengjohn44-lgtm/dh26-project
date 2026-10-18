@@ -39,7 +39,7 @@ node server.js                            # Node >= 18, no npm install
 ```
 
 - Desktop: `http://localhost:8080`. A webcam works, since localhost counts as a secure context.
-- Phone (same Wi-Fi): `https://<lan-ip>:8443`. The server creates a self-signed certificate in `narrator/certs/` (gitignored) and prints the URL. Tap through the certificate warning.
+- Phone (same Wi-Fi): `https://<lan-ip>:8443`. The server creates a self-signed certificate in `narrator/certs/` (gitignored), prints the URL, and draws it as a **QR code** in the terminal: scan it with the phone's camera. Tap through the certificate warning.
   - Phones only allow camera access over HTTPS.
   - The certificate is tied to the LAN IP at the time it was made. If the IP changes, delete `narrator/certs/` and restart.
 - Off-Wi-Fi alternative: `npx localtunnel --port 8080` or `cloudflared tunnel --url http://localhost:8080`.
@@ -69,6 +69,8 @@ esp8266_main.ino     ESP8266 + ultrasonic sensor: POSTs distance=<m>|Out_of_Rang
 narrator/
   server.js          static file server + POST /api/describe proxy to Perceptron; HTTP 8080 and HTTPS 8443
   prompt.js          SYSTEM_PROMPT + buildPayload(): the exact request sent to Perceptron
+  eval/              tests: run.cjs (all offline checks), api_eval.cjs (real model), suites/, experiments/, baselines/; photos/ and results/ gitignored
+  qr.js              tiny QR encoder: the phone link as a QR code in the startup log (QR=0 hides it)
   README.md          user-facing run/usage notes
   .env               PERCEPTRON_API_KEY (gitignored, never commit)
   certs/             auto-generated self-signed TLS cert (gitignored)
@@ -195,7 +197,7 @@ handleReply():
 - **Flow:** a blurry frame isn't sent and is re-checked after `BLUR_RETRY_MS = 100`. After `BLUR_FALLBACK_MS = 2000` with nothing sharp, the sharpest skipped frame is sent, so the app is never blind for long.
 - **Hint:** after `HINT_AFTER_MS = 3000` of continuous blur, `Speech.say('Hold the phone steady.')`, at most once per `HINT_COOLDOWN_MS = 15000`, and only with Voice on. It isn't added to `said`. While blurry, the status shows "Live · hold steady (blurry)".
 - **🐞 overlay:** a `blur:` line with the verdict, sharpness, threshold, skip count and turn rate.
-- **Tests:** 14 checks in the fake browser (in `orient_test.cjs`). Not yet tuned on a real phone camera: real motion blur and noise in low light may need a different `BLUR_RATIO`.
+- **Tests:** 14 checks in the fake browser (in `narrator/eval/suites/app_test.cjs`). Not yet tuned on a real phone camera: real motion blur and noise in low light may need a different `BLUR_RATIO`.
 
 ### `narrator/public/beeper.js` (`window.Beeper`, `beepParams` also exported for Node)
 - Readings come from `EventSource('/api/distance/stream')`, opened by `Beeper.start()` (in `start()`) and closed by `Beeper.stop()`.
@@ -352,33 +354,16 @@ handleReply():
 
 ## 8. Testing and verification
 
-There is no automated test suite in the repo yet. The evaluation scripts used so far lived outside the repo. To check a change:
+Everything is in `narrator/eval/`; the process, and how to read the output, is in **[`docs/testing-process.md`](docs/testing-process.md)**. To check a change:
 
-1. **Syntax:** `node --check narrator/server.js narrator/public/app.js narrator/public/filter.js && node -e "require('./narrator/prompt')"`
-2. **Filter unit checks** (no API calls):
-   ```sh
-   node -e "const F=require('./narrator/public/filter.js'); console.log(F.classifyReply('Stairs up ahead, at least 5 steps.',['Stairs down ahead, at least 10 steps.']))"   # expect reason 'new'
-   ```
-   Cases that must hold:
-   - same stairs with a different count → `repeat`
-   - stairs became "close" → new
-   - `cautiousStairCount("Stairs going up ahead, at least 3 steps.")` → "…at least 2 steps."
-   - Room 214 → Room 215 → new
-   - "Curb ahead." after "Curb ahead, crosswalk beyond it." → `repeat`
-   - `n/a` → `n/a`
-3. **Server smoke test:** run with `PORT=18080 HTTPS_PORT=18443 node server.js` (avoids clashing with a running instance), then `curl -X POST localhost:18080/api/describe -H 'Content-Type: application/json' -d '{"image":"data:image/jpeg;base64,…","said":[]}'`. Check for a 200, a reply, and the `Server-Timing` header.
-4. **Prompt evaluation** (uses API credits). Build the request with `require('./narrator/prompt').buildPayload(...)`, so tests send exactly what the server sends. Filter replies with `filter.js`. Check:
-   - each test image produces an alert of 12 words or fewer
-   - the same image with its own alert in `said` → `n/a` or `repeat`
-   - a different image after an unrelated alert → a new alert
-   - no step counts except on stairs
-   - door mentions on open-space images
-   - latency (median and max)
+1. **Offline checks (always):** `node narrator/eval/run.cjs`. Runs a syntax check, then 11 suites (~290 checks, ~1.5 min, no API calls): `filter.js`/`prompt.js` rules, the real `app.js`/`ui.js`/`speech.js`/`beeper.js`/`recorder.js`/`log.js` in fake browsers, and the real server's distance stream. Prints every check, a summary table, exits non-zero on any failure, and saves a transcript to `narrator/eval/results/`. `--list`, `--only <names>`, `--quiet`.
+2. **Prompt evaluation (after changing `prompt.js` or `filter.js`; uses API credits):** `node narrator/eval/api_eval.cjs [--runs N] [--reasoning low] [--style classic]`. Sends 19 photos via `buildPayload` and filters replies via `classifyReply`, then checks ≤ 12 words, no distances, step counts only on stairs, the expected hazard label, and that the same view isn't spoken twice; reports median and worst latency. Results vary between runs: run before and after a change **in the same session** and compare. Baseline 2026-10-18: 84/88, median 1.08 s.
    - Run at most about 3 requests at once; 8 at once inflated latency to about 6 s.
-   - Test photos so far: Wikimedia Commons (stairs, curb, crosswalk, pothole, building sign "Bella Concert Hall", room sign "Class Room 71A/71B/71F/71G", corridor, cyclists, atrium, concourse, mall, plaza, library, archway, parking lot, several doors). Resize them to 768 px with `sips -Z 768`. Several are top-down or aerial shots, which are poor tests for a pedestrian camera.
-5. **Real device:** nothing replaces walking with a phone. Watch the latency chip. If the total is far above the model time, the delay is phone↔laptop networking.
+   - Photos are Wikimedia Commons images in `narrator/eval/photos/` (gitignored, kept on disk). Several are top-down or aerial shots, which are poor tests for a pedestrian camera.
+3. **Server smoke test:** `PORT=18080 HTTPS_PORT=18443 DISTANCE_PORT=15000 node narrator/server.js`, then curl `/api/describe` and check for a 200, a reply, and the `Server-Timing` header.
+4. **Real device:** nothing replaces walking with a phone. Watch the latency chip. If the total is far above the model time, the delay is phone↔laptop networking.
 
-If you add a proper harness, put it in `narrator/eval/` and keep images out of git, or download them on demand.
+New checks go in `narrator/eval/suites/` (one `✓`/`✗` line per check, `pass/total` last) and in `SUITES` in `run.cjs`. Keep one-off measurement scripts in `narrator/eval/experiments/` and list them in its README; don't leave them in a temporary folder.
 
 ## 9. Conventions for agents
 

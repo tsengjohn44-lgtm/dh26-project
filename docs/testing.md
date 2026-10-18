@@ -5,23 +5,27 @@ There is no phone or headless browser on the development laptop (no Chrome, no f
 - **simulated browsers in Node:** the real `app.js`, `speech.js`, `beeper.js` and `ui.js` run against fake camera, audio, screen and DOM objects
 - **photo-based calibration** for the vision thresholds
 
-**Important:** the test scripts were written in a temporary scratch folder and are **not in the repo**. Recreating them under `narrator/eval/` (with photos downloaded on demand, not committed) is a recommended next step. What each one checks is described below, so they can be rebuilt.
+All scripts are in [`narrator/eval/`](../narrator/eval/README.md). Run every offline check with `node narrator/eval/run.cjs`; the step-by-step process and how to read the output are in **[testing-process.md](testing-process.md)**.
 
 ## Suites and what they cover
 
-| Suite (scratch name) | Runs | Checks | Covers |
+| Suite (`narrator/eval/suites/`) | Runs | Checks | Covers |
 |---|---|---|---|
-| `orient_test.cjs` | real `app.js` in a fake browser | 115 | camera reopen races; Stop while opening; 180° turns (events + polling); fullscreen lock/re-lock/unlock; the 🐞 overlay; Android flip correction (preview + AI frames, hysteresis, not on iPhone); pause while speaking (on/off); beeper wiring; blur gate (skip, 100 ms retry, 2 s fallback, gyroscope, spoken hint once per 15 s, not with Voice off); reasoning selector (default, saved, restored, request body); Fast + Low (two requests per frame, ≤2 slow in flight, correction spoken, duplicate suppressed, old view ignored); 🎤 Ask (hold, tap, click, too short, mic denied, Stop, auto-send on silence, hold ignores silence, no speech, 405 → restart message); distance sensor in requests (default on, valid reading sent on describe/slow/ask, stale or off → not sent, height saved/restored, overlay line); History logging (alert, repeat, n/a, late, correction, answer, hint, error) |
+| `app_test.cjs` | real `app.js` in a fake browser | 115 | camera reopen races; Stop while opening; 180° turns (events + polling); fullscreen lock/re-lock/unlock; the 🐞 overlay; Android flip correction (preview + AI frames, hysteresis, not on iPhone); pause while speaking (on/off); beeper wiring; blur gate (skip, 100 ms retry, 2 s fallback, gyroscope, spoken hint once per 15 s, not with Voice off); reasoning selector (default, saved, restored, request body); Fast + Low (two requests per frame, ≤2 slow in flight, correction spoken, duplicate suppressed, old view ignored); 🎤 Ask (hold, tap, click, too short, mic denied, Stop, auto-send on silence, hold ignores silence, no speech, 405 → restart message); distance sensor in requests (default on, valid reading sent on describe/slow/ask, stale or off → not sent, height saved/restored, overlay line); History logging (alert, repeat, n/a, late, correction, answer, hint, error) |
 | `log_test.cjs` | real `log.js` with fake storage and timers | 16 | debounced saves, flush on page hide, reload, 1,000 cap, `toText`, filters, clear, corrupt or blocked storage |
 | `history_ui_test.cjs` | real `ui.js` + `log.js` in a fake DOM | 21 | History sheet open/close (button, recent alerts, ✕, backdrop, Escape), one sheet at a time, Spoken/All filter saved, live rows, tap to hear, Copy (+ fallback), Clear (confirm/cancel), Show older, empty state |
 | `ui_test.cjs` | real `ui.js` in a fake DOM | 16 | sheet open/close (⚙, ✕, backdrop, Escape) and focus; segmented control ↔ select; tap / Enter to repeat; hazard highlight; vibration once per new alert; no vibration support |
-| `queue_test2.cjs` | real `speech.js` with fake fetch streams and a fake Web Audio clock | 12 | audio starts on the first chunk; in-order playback with no overlap or loss; next clip starts as soon as the previous ends; odd byte splits; interrupt; retry; cancel; voice off |
-| `stall_test.cjs` | real `speech.js` | 1 | a hung download is given up and the queue drains |
+| `speech_queue_test.cjs` | real `speech.js` with fake fetch streams and a fake Web Audio clock | 12 | audio starts on the first chunk; in-order playback with no overlap or loss; next clip starts as soon as the previous ends; odd byte splits; interrupt; retry; cancel; voice off |
+| `speech_stall_test.cjs` | real `speech.js` | 1 | a hung download is given up and the queue drains |
+| `speech_priority_test.cjs` | real `speech.js` | 8 | hazard clips cut non-hazard speech; hazards never cut hazards; pending count |
 | `beeper_test.cjs` | real `beeper.js` | 27 | curve shape and formulas; intensity; beat spacing; immediate speed-up; ducking (not at ≤10 cm); stale/offline; replayed old reading; out of range; toggle; stop; volume; `reading` for the AI (fresh, out of range, beyond 4 m, stale, muted beeps) |
-| `vad_test.cjs` | real `recorder.js` | 11 | end-of-speech detector: sends ~1.2 s after speech, mid-question pauses, no speech at 6 s, clicks, loud background, quiet sounds, trailing-silence trim, the live recorder path |
-| `sse_test.cjs` | real `server.js` over HTTP | 11 | ESP-style POSTs → 204; delivery to the stream < 50 ms; out of range; bad bodies → 400; latest reading on connect; 10 readings in order |
-| filter/prompt checks | `filter.js`, `prompt.js` in Node | ~40 | repeat rules (stairs up vs down, recount, close, room numbers, `refine` directions); stair-count discount; stair label by direction (9); `n/a`; `buildPayload` reasoning levels, caps, brief-thinking instruction; `cleanSensor` bounds and the sensor paragraph |
-| ESP health scenarios | `server.js` + `curl` | 3 scenarios | Wi-Fi drop vs reboot vs old sketch, as logged |
+| `recorder_test.cjs` | real `recorder.js` | 11 | end-of-speech detector: sends ~1.2 s after speech, mid-question pauses, no speech at 6 s, clicks, loud background, quiet sounds, trailing-silence trim, the live recorder path |
+| `distance_server_test.cjs` | real `server.js` over HTTP | 11 | ESP-style POSTs → 204; delivery to the stream < 50 ms; out of range; bad bodies → 400; latest reading on connect; 10 readings in order |
+| `filter_prompt_test.cjs` | `filter.js`, `prompt.js` in Node | 45 | repeat rules (stairs up vs down, recount, close, room numbers, `refine` directions); stair-count discount; stair label by direction (9); `n/a`; `buildPayload` reasoning levels, caps, brief-thinking instruction; `cleanSensor` bounds and the sensor paragraph |
+| ESP health scenarios | `server.js` + `curl` | 3 scenarios | Wi-Fi drop vs reboot vs old sketch, as logged (manual, no script) |
+| `api_eval.cjs` (not in the default run) | real Perceptron API on 19 photos | ~88 | ≤ 12 words, no distances, step counts only on stairs, hazard label, not spoken twice, latency |
+
+The one-off measurement scripts behind the numbers in these docs are in `narrator/eval/experiments/`, indexed with the result each produced.
 
 ## Real-API measurements (method)
 
@@ -62,12 +66,11 @@ There is no phone or headless browser on the development laptop (no Chrome, no f
 | **Same-session comparisons, medians, worst case** | Perceptron latency varies between sessions (Low: 1.3 s one day, 2.1 s another); comparing across sessions gave false wins. | Single runs; comparing to old numbers. |
 | **Test both directions of a change** | A fix can cause a new failure elsewhere: the sensor paragraph fixed obstacle detection but mislabelled down-stairs, which only a before/after run on unrelated photos showed. | Testing only the case being fixed. |
 | **Contradiction tests** | A feature that adds context (like the distance reading) must be tested with context that disagrees with the picture, since that is when the model invents things (9/12 before the wording fix). | Testing only consistent inputs. |
-| **Photos from Wikimedia Commons, not committed** | Free to use and quick to fetch; keeping them out of git keeps the repo small. Many are not pedestrian-eye views, so real walks are still needed. | Committing a photo set. |
+| **Photos from Wikimedia Commons, not committed** | Free to use and quick to fetch; keeping them out of git keeps the repo small. They're kept on disk in `narrator/eval/photos/` (gitignored). Many are not pedestrian-eye views, so real walks are still needed. | Committing a photo set. |
 
 ## Quick checks before committing
 
 ```sh
-node --check narrator/server.js narrator/prompt.js narrator/public/*.js
-node -e "const F=require('./narrator/public/filter.js'); console.log(F.classifyReply('Stairs up ahead, at least 5 steps.',['Stairs down ahead, at least 10 steps.']).reason)"   # new
-PORT=18080 HTTPS_PORT=18443 DISTANCE_PORT=15000 node narrator/server.js   # then curl the endpoints
+node narrator/eval/run.cjs            # syntax + all offline suites; exit 0 = all passed
+node narrator/eval/api_eval.cjs       # after prompt.js / filter.js changes (uses API credits)
 ```

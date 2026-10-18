@@ -84,7 +84,7 @@ Code: `narrator/public/recorder.js` (microphone → WAV), `askQuestion` flow in 
 ## Tests
 
 - **Encoder unit tests** (6): 48 → 16 kHz keeps the duration, a valid WAV header, sample clamping, base64 round trip, the payload's shape, and rejecting bad audio.
-- **Fake browser** (14 checks in `orient_test.cjs`):
+- **Fake browser** (14 checks in `narrator/eval/suites/app_test.cjs`):
   - not running → hint
   - hold: recording, speech cancelled, beeps muted, no narration frames sent
   - release: frame and audio sent; answer shown and spoken urgent, not added to `said`; beeps and narration resume

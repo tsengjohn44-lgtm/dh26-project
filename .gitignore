@@ -7,3 +7,7 @@ node_modules/
 __pycache__/
 narrator/certs/key.pem
 narrator/certs/cert.pem
+# Test photos stay on disk but out of git (licensing and repo size); see docs/testing-process.md
+narrator/eval/photos/
+# Run transcripts and API replies; keep the ones you cite by copying them elsewhere
+narrator/eval/results/

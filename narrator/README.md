@@ -14,7 +14,7 @@ node server.js
 The app needs Node 18 or later and has no npm dependencies. On startup the server prints:
 
 - `http://localhost:8080`, for a laptop with a webcam
-- `https://<your-lan-ip>:8443`, to open on a phone on the same Wi-Fi
+- `https://<your-lan-ip>:8443`, to open on a phone on the same Wi-Fi. The terminal also shows it as a **QR code**: point the phone's camera at it to open the page (set `QR=0` to hide it).
 
 Phones only allow camera access on HTTPS pages, so the server creates a self-signed certificate in `certs/` the first time it runs. When the phone shows a certificate warning, tap through it: **Show details → visit website** on iOS, **Advanced → Proceed** on Android.
 

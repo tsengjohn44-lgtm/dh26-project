@@ -10,6 +10,7 @@ const http = require('http');
 const https = require('https');
 const { execFileSync } = require('child_process');
 const { buildPayload, buildAskPayload } = require('./prompt');
+const QR = require('./qr');
 const Filter = require('./public/filter.js');
 
 const ROOT = __dirname;
@@ -421,11 +422,26 @@ distanceServer.listen(DISTANCE_PORT, '0.0.0.0', () => {
   console.log(`  ESP8266:  set serverUrl to http://${lanAddresses()[0] || '<lan-ip>'}:${DISTANCE_PORT}/distance`);
 });
 
+// A QR code of the numeric-IP phone address, so nobody types it (the camera app opens it). The
+// IP form works on every phone and network; .local names don't everywhere. QR=0 turns it off.
+function printPhoneQr() {
+  const ip = lanAddresses()[0];
+  if (!ip || process.env.QR === '0') return;
+  const url = `https://${ip}:${HTTPS_PORT}`;
+  try {
+    console.log(`\n  Scan with the phone's camera to open ${url}:`);
+    console.log(QR.toTerminal(url));
+  } catch (e) {
+    console.log(`  (QR code unavailable: ${e.message})`); // never let it stop the server
+  }
+}
+
 const tls = ensureCert();
 if (tls) {
   https.createServer(tls, handler).listen(HTTPS_PORT, '0.0.0.0', () => {
     if (localHostname()) console.log(`  Phone:    https://${localHostname()}:${HTTPS_PORT}   (same address even when the IP changes)`);
     for (const ip of lanAddresses()) console.log(`  Phone:    https://${ip}:${HTTPS_PORT}   (accept the certificate warning)`);
+    printPhoneQr();
     console.log('');
   });
 }

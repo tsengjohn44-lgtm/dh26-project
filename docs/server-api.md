@@ -56,8 +56,9 @@ A zero-dependency Node 18+ server: `node narrator/server.js`. It serves the phon
 | `PORT` | `8080` | HTTP |
 | `HTTPS_PORT` | `8443` | HTTPS for phones |
 | `DISTANCE_PORT` | `5000` | Plain HTTP for the ESP8266; on macOS often taken by AirPlay Receiver |
+| `QR` | on | `0` hides the startup QR code |
 
-The startup log prints the model and voice settings, the desktop URL, the phone URLs (including `https://<mac-name>.local:8443`), and the `serverUrl` for the sketch.
+The startup log prints the model and voice settings, the desktop URL, the phone URLs (including `https://<mac-name>.local:8443`), and the `serverUrl` for the sketch. Below the phone URLs it draws a **QR code of the numeric-IP link** (`https://<lan-ip>:8443`, the first LAN address): point the phone's camera at the terminal to open it. `QR=0` turns it off.
 
 ## HTTPS and addresses
 
@@ -88,6 +89,7 @@ The startup log prints the model and voice settings, the desktop URL, the phone 
 | **`.local` name in the certificate** | The laptop's IP changes between networks; `https://<mac>.local:8443` keeps working. | IP-only access. |
 | **Early speech jobs held in memory, max 2, 15 s** | A job is useful only for the next second or two; the limits cap wasted ElevenLabs requests when the phone skips an alert. | No limit; storing on disk. |
 | **Body size limits** (16 MiB frames, 64 KiB speech, 4 KiB sensor) | Stops accidental or malicious huge requests from exhausting memory. | No limits. |
+| **QR code of the IP link, drawn in the terminal** (`narrator/qr.js`) | Typing `https://10.44.x.x:8443` on a phone is slow and error-prone. The numeric-IP link works on every phone and network, unlike `.local`. A small built-in encoder (byte mode, level M, versions 1–10) keeps the project dependency-free. It's drawn with half-block characters in explicit black and white, so it scans on dark and light terminal themes. Verified by decoding with macOS's QR detector: 12/12 test strings across all 10 sizes, and the exact text the server prints. | The `qrcode` npm package (a dependency); printing a link only. |
 | **No authentication (yet)** | A demo on a private network; anyone on the same Wi-Fi who knows the address could use the keys' credits. Add auth before any wider deployment. | Accounts: out of scope for the hackathon. |
 
 ## Perceptron and ElevenLabs facts

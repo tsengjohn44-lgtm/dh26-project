@@ -114,7 +114,7 @@ Considered on 2026-10-18 when the team asked whether to migrate. **Decision: sta
 - a **native app**: React Native or Swift/Kotlin would give reliable camera control, background audio and a true portrait lock without browser workarounds. That, not a web framework, is the real next step if the browser's limits start to bite.
 
 **Cheaper upgrades that give most of the benefit** (not done yet):
-1. **Put the tests in the repo** (`narrator/eval/`, one `node narrator/eval/run.js`). Today they live in a scratch folder ([testing.md](testing.md)).
+1. ~~**Put the tests in the repo**~~ Done 2026-10-18: `narrator/eval/`, one `node narrator/eval/run.cjs` ([testing-process.md](testing-process.md)).
 2. **Split `app.js` into native ES modules** (`<script type="module">`, still no build): camera, frames, requests, ask, settings.
 3. **Type checking without a build:** JSDoc types + `// @ts-check`, checked by `npx tsc --noEmit --allowJs --checkJs` (TypeScript as a dev-only tool).
 4. **Installable web app + real hosting:** a `manifest.json` (`display: fullscreen`, `orientation: portrait`) to lock portrait without the fullscreen API, and the server on a small VM with real HTTPS, so there are no certificate warnings and no laptop is needed.
