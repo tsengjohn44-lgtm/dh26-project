@@ -18,8 +18,17 @@
     <span id="latency" class="latency"></span>
     <span id="lens" class="latency"></span>
     <span id="voiceStatus" class="latency"></span>
+    <button id="debugBtn" class="icon" aria-label="Show diagnostics" aria-pressed="false">🐞</button>
     <button id="flip" class="icon" aria-label="Switch camera">⇄</button>
   </header>
+
+  <div id="debug" class="debug" hidden>
+    <figure class="debug-frame">
+      <img id="debugFrame" alt="Last frame sent to Perceptron">
+      <figcaption>sent to Perceptron</figcaption>
+    </figure>
+    <pre id="debugText"></pre>
+  </div>
 
   <section class="caption" aria-live="polite">
     <p id="current" class="current">Tap Start to describe your surroundings.</p>

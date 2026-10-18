@@ -38,9 +38,11 @@ const TTS_VOICE = process.env.ELEVENLABS_VOICE_ID || 'JBFqnCBsd6RMkjVDRZzb';
 const TTS_RATE = Number(process.env.ELEVENLABS_SAMPLE_RATE || 24000);
 const TTS_URL = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(TTS_VOICE)}/stream?output_format=pcm_${TTS_RATE}`;
 // Faster delivery. v3/v4 models ignore voice_settings.speed (measured: same length at 1.0-1.5)
-// but follow the audio tag, which isn't spoken: ~20% shorter clips. Other models use speed.
+// but follow an audio tag, which isn't spoken. Measured on 3 alerts with v4 Turbo: no tag
+// 10.16 s, [speaking quickly] 8.32 s, [rapidly] 7.44 s. Other models (e.g. Flash v2.5) use
+// voice_settings.speed instead, max 1.2 (ElevenLabs rejects higher): 6.46 s at 1.2.
 const TTS_SPEED = Number(process.env.ELEVENLABS_SPEED || 1.2);
-const TTS_TAG = /^eleven_v[34]/.test(TTS_MODEL) ? (process.env.ELEVENLABS_TAG ?? '[speaking quickly]') : '';
+const TTS_TAG = /^eleven_v[34]/.test(TTS_MODEL) ? (process.env.ELEVENLABS_TAG ?? '[rapidly]') : '';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',

@@ -111,6 +111,34 @@ html, body {
 }
 .start.running { background: var(--stop); color: var(--fg); }
 
+.icon + .icon { margin-left: 0; }
+
+.debug {
+  position: fixed;
+  top: calc(env(safe-area-inset-top) + 64px);
+  left: 8px;
+  right: 8px;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.75);
+  color: #9f9;
+  border-radius: 8px;
+  pointer-events: none;
+}
+.debug[hidden] { display: none; }
+.debug pre {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font: 11px/1.35 ui-monospace, Menlo, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.debug-frame { margin: 0; flex: none; width: 88px; font-size: 10px; text-align: center; }
+.debug-frame img { display: block; width: 88px; border: 1px solid #9f9; border-radius: 4px; }
+
 .toggles {
   display: flex;
   flex-direction: column;
