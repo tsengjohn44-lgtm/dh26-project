@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Detector hints</title>
+  <style>
+    body { margin: 0; padding: 16px; background: #111; color: #eee; font: 15px/1.4 system-ui, sans-serif; }
+    h1 { font-size: 1.3rem; margin: 0 0 8px; }
+    button { font: inherit; font-weight: 700; padding: 14px 18px; border: 0; border-radius: 10px; background: #ffd400; color: #000; }
+    button:disabled { opacity: 0.5; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.85rem; margin: 12px 0; }
+    th, td { text-align: left; vertical-align: top; padding: 4px 6px; border-bottom: 1px solid #333; }
+    textarea { width: 100%; height: 12em; background: #000; color: #eee; font: 12px ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <h1>Detector hints: does Perceptron do better with them?</h1>
+  <p>Each test image is sent the way the app sends a frame, without a hint, with the detector's summary as a hint, and with a deliberately wrong hint. Uses API credits: images × 3 modes × 3 runs.</p>
+  <button id="run">Run</button>
+  <p id="status" aria-live="polite"></p>
+  <table id="summary" hidden><thead><tr><th>Mode</th><th>Calls</th><th>Model ms (median)</th><th>Total ms (median)</th><th>Words (mean)</th><th>&gt;12 words</th><th>n/a</th><th>Says "dog"</th></tr></thead><tbody></tbody></table>
+  <table id="detail" hidden><thead><tr><th>Image</th><th>Detector hint</th><th>No hint</th><th>Hint</th><th>Wrong hint</th></tr></thead><tbody></tbody></table>
+  <textarea id="result" readonly></textarea>
+  <script src="/detector.js"></script>
+  <script src="/tracker.js"></script>
+  <script src="hints.js"></script>
+</body>
+</html>

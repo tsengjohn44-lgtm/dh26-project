@@ -39,14 +39,19 @@ const MOTION_FRAMES = false;
 const VIEW_CHANGE = 0.5;
 const THUMB_W = 24, THUMB_H = 18;
 
-// Fast tier, off unless the page is opened with ?detector=1: an on-device detector (detector.js)
-// runs on every camera frame and keeps a live line such as "2 people ahead, chair on the left"
-// (tracker.js), while Perceptron keeps reporting stairs, curbs, doors and text.
+// Off unless the page is opened with ?detector=1: an on-device detector (detector.js) runs on
+// the camera frames and keeps a summary such as "2 people ahead, chair on the left" (tracker.js).
+// The summary isn't shown (add &live=1 to see it); a change in it sends a frame to Perceptron
+// right away instead of at the next tick, and &hints=1 also sends it along as a hint.
 const params = new URLSearchParams(location.search);
 const DETECTOR = params.get('detector') === '1';
-// Lite2 float16 on GPU: the only model that found both the bike and its rider on the test photos
-// (laptop benchmark: 41 ms/frame). ?model=lite0-f16 picks the lighter one.
-const DETECTOR_MODEL = params.get('model') || 'lite2-f16';
+const SHOW_LIVE = DETECTOR && params.get('live') === '1';
+// Sending the summary as a hint is opt-in (&hints=1): on the test photos it didn't make Perceptron
+// give counts (people at a table stayed "n/a"), and a planted wrong hint leaked into 2 of 26 replies.
+const SEND_HINTS = DETECTOR && params.get('hints') === '1';
+// Lite0 float16 on GPU: 52 ms/frame (19 fps) in iPhone Safari, where Lite2 on GPU never finished
+// loading. ?model=lite2-f16 tries the larger model (found bike and rider together on the laptop).
+const DETECTOR_MODEL = params.get('model') || 'lite0-f16';
 const DETECT_FPS = 15;      // cap: plenty for walking speed, and saves battery and heat
 const SLOW_DETECT_MS = 125; // slower than ~8 fps the live line lags behind: drop to Lite0
 const SLOW_CHECK_FRAMES = 30;
@@ -71,7 +76,7 @@ let detector = null;        // loaded once on the first Start with ?detector=1, 
 let detectorLoading = null;
 const tracker = DETECTOR ? Tracker.createTracker() : null;
 const liveStable = DETECTOR ? Tracker.createStabilizer() : null;
-let liveText = '';          // the live line on screen; Perceptron is told it was already said
+let liveText = '';          // the detector's current summary; sent to Perceptron as a hint
 
 // ---------- camera ----------
 
@@ -181,6 +186,7 @@ async function sendFrame(id) {
 
   // Perceptron rejects clips whose frames differ in size (e.g. after the phone rotates).
   const body = { image, said: saidWithLive() };
+  if (SEND_HINTS && liveText) body.hints = liveText;
   if (MOTION_FRAMES && prevFrame && prevFrame.size === size && t0 - prevFrame.t <= MAX_PREV_FRAME_AGE) {
     body.prevImage = prevFrame.image;
     body.prevDtMs = Math.round(t0 - prevFrame.t);
@@ -245,9 +251,9 @@ function handleReply(seq, view, reply, totalMs, apiMs) {
   said = [...said, text].slice(-MAX_SAID);
 }
 
-// What the person has been told: Perceptron's alerts for this view plus the detector's live line,
-// so Perceptron doesn't repeat the people and chairs already on screen. MAX_SAID in total.
-const saidWithLive = () => (liveText ? [...said.slice(-(MAX_SAID - 1)), liveText] : said);
+// What the person has been told: Perceptron's alerts for this view, plus the detector's line when
+// it is on screen (&live=1), so Perceptron doesn't repeat it. MAX_SAID in total.
+const saidWithLive = () => (SHOW_LIVE && liveText ? [...said.slice(-(MAX_SAID - 1)), liveText] : said);
 
 function pushHistory(text) {
   const li = document.createElement('li');
@@ -340,8 +346,10 @@ function detectorLoop(id) {
 function showLive(text) {
   if (text === liveText) return;
   liveText = text;
-  liveEl.textContent = text;
+  if (SHOW_LIVE) liveEl.textContent = text;
   window.dispatchEvent(new CustomEvent('narrator:live', { detail: { text, t: performance.now() } }));
+  // Something new in view (or something got close): describe it now rather than at the next tick.
+  if (text && running && inFlight.size < MAX_IN_FLIGHT && performance.now() >= pausedUntil) sendFrame(runId);
 }
 
 function resetLive() {

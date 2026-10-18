@@ -36,7 +36,9 @@ n/a`;
 
 const isImageDataUrl = (v) => typeof v === 'string' && v.startsWith('data:image/');
 
-// body: { image, prevImage?, prevDtMs?, said?: string[] }  ->  payload, or throws on bad input.
+// body: { image, prevImage?, prevDtMs?, said?: string[], hints?: string }  ->  payload, or throws
+// on bad input. `hints` is the on-device detector's summary ("2 people ahead, chair on the left."),
+// sent with ?detector=1 so counts and positions of people and obstacles come out right.
 function buildPayload(body, model) {
   if (!isImageDataUrl(body.image)) throw new Error('Expected { image: "data:image/..." }');
 
@@ -51,9 +53,13 @@ function buildPayload(body, model) {
     : { type: 'image_url', image_url: { url: body.image } };
 
   const said = cleanSaid(body.said);
+  const hints = typeof body.hints === 'string' ? body.hints.trim().slice(0, 200) : '';
+  // The detector can be wrong (e.g. a shoe in a pothole read as a fire hydrant), so the model is
+  // told to keep only what the image confirms. No example count: the model copies examples.
   const text = [
     clip && `These are two frames ${dt} ms apart; the last is now. Compare them to tell what is moving toward the person.`,
     said.length ? `Already said (oldest first):\n${said.map((s) => `- ${s}`).join('\n')}` : 'Already said: nothing yet.',
+    hints && `An object detector on the phone also reports: ${hints} It can be wrong; mention only what the image confirms. When several of one kind are visible, say how many.`,
     said.length ? 'What is new and important now?' : 'What is important now?',
   ].filter(Boolean).join('\n\n');
 
