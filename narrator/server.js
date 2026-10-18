@@ -311,18 +311,67 @@ function readText(req, limit = 4096) {
 
 // POST /distance  distance=0.420 | distance=Out_of_Range  ->  204
 async function postDistance(req, res) {
-  let value;
-  try { value = new URLSearchParams(await readText(req)).get('distance'); } catch (e) { return send(res, 400, e.message); }
+  let params, value;
+  try { params = new URLSearchParams(await readText(req)); value = params.get('distance'); } catch (e) { return send(res, 400, e.message); }
   let metres;
   if (value === 'Out_of_Range') metres = null;
   else if (value !== null && value.trim() !== '' && Number.isFinite(Number(value)) && Number(value) >= 0) metres = Number(value);
   else return send(res, 400, 'Expected distance=<metres> or distance=Out_of_Range');
   lastDistance = { metres, at: Date.now() };
+  noteEspHealth(params);
   const event = `data: ${JSON.stringify(lastDistance)}\n\n`;
   for (const client of distanceClients) client.write(event);
   res.writeHead(204);
   res.end();
 }
+
+// Board health, for debugging dropouts. The sketch sends uptime (ms since boot), rssi (Wi-Fi
+// signal, dBm), drops (Wi-Fi disconnects since boot) and reset (why it last booted) with each
+// reading. Logged: first contact, going silent, coming back (rebooted = power problem; same
+// uptime = Wi-Fi problem), Wi-Fi drops, and a summary every 30 s. Older sketches without
+// these fields still work; only silence is logged for them.
+const ESP_SILENT_MS = 3000;
+const esp = { lastPost: 0, uptime: null, drops: null, rssi: null, reset: '', silentSince: 0, count: 0, summaryAt: 0 };
+const clock = () => new Date().toLocaleTimeString();
+
+function noteEspHealth(params) {
+  const now = Date.now();
+  const uptime = params.has('uptime') ? Number(params.get('uptime')) : null;
+  const drops = params.has('drops') ? Number(params.get('drops')) : null;
+  const rssi = params.has('rssi') ? Number(params.get('rssi')) : null;
+  const reset = params.get('reset') || '';
+  const rebooted = uptime !== null && esp.uptime !== null && uptime < esp.uptime;
+  const signal = rssi !== null ? `, signal ${rssi} dBm${rssi < -75 ? ' (weak)' : ''}` : '';
+
+  if (!esp.lastPost) {
+    console.log(`  [${clock()}] ESP8266 connected${uptime !== null ? ` (running ${(uptime / 1000).toFixed(0)} s, last reset: ${reset || '?'})` : ''}${signal}`);
+  } else if (esp.silentSince) {
+    const gap = ((now - esp.lastPost) / 1000).toFixed(1);
+    if (uptime === null) console.log(`  [${clock()}] ESP8266 back after ~${gap} s${signal}`);
+    else if (rebooted) console.log(`  [${clock()}] ESP8266 back after ~${gap} s: it REBOOTED (reset reason: ${reset || '?'}). Likely a power problem: supply sagging under Wi-Fi load, or wrong supply pin.`);
+    else console.log(`  [${clock()}] ESP8266 back after ~${gap} s: no reboot (running ${(uptime / 1000).toFixed(0)} s), so power held; Wi-Fi/network dropped${drops !== null ? ` (Wi-Fi drops since boot: ${drops})` : ''}.`);
+  } else if (rebooted) {
+    console.log(`  [${clock()}] ESP8266 REBOOTED without going silent (reset reason: ${reset || '?'}, was running ${(esp.uptime / 1000).toFixed(0)} s). Likely a power dip.`);
+  }
+  if (drops !== null && esp.drops !== null && !rebooted && drops > esp.drops) {
+    console.log(`  [${clock()}] ESP8266 reports Wi-Fi drop #${drops}${signal}`);
+  }
+
+  esp.count++;
+  if (now - esp.summaryAt >= 30000) {
+    if (esp.summaryAt) console.log(`  [${clock()}] ESP8266 ok: ${esp.count} readings in the last 30 s${signal}${uptime !== null ? `, up ${(uptime / 1000).toFixed(0)} s` : ''}${drops !== null ? `, Wi-Fi drops ${drops}` : ''}`);
+    esp.summaryAt = now;
+    esp.count = 0;
+  }
+  Object.assign(esp, { lastPost: now, uptime, drops, rssi, reset, silentSince: 0 });
+}
+
+setInterval(() => {
+  if (esp.lastPost && !esp.silentSince && Date.now() - esp.lastPost > ESP_SILENT_MS) {
+    esp.silentSince = Date.now();
+    console.log(`  [${clock()}] ESP8266 silent: no reading for ${ESP_SILENT_MS / 1000} s${esp.rssi !== null ? ` (last signal ${esp.rssi} dBm)` : ''}`);
+  }
+}, 1000).unref();
 
 // GET /api/distance/stream  ->  text/event-stream of { metres, at, ageMs? }
 function distanceStream(req, res) {

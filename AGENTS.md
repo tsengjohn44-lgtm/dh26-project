@@ -176,6 +176,21 @@ handleReply():
 - Real API through `server.js`: first audio arrives in about 200 ms (about 400 ms on a cold connection).
 - **Not yet verified by listening on a phone.**
 
+### Blur gate (`pickFrame()` in `app.js`, `Filter.sharpness()` in `filter.js`)
+- **Why:** blurry frames give wrong answers. Five photos, blurred by shrinking to 110 px and enlarging back, went through the real API with the current prompt:
+  - the room sign lost its numbers ("Class Room 71A, 71B…" became "Door ahead")
+  - the stair count halved (10 → 5)
+  - the crosswalk photo gained an invented "Cars approaching from right"
+  - large text and big shapes survived
+- **Score:** `Filter.sharpness(gray, w, h)` is the variance of the Laplacian on a 160×120 grayscale copy of the frame being sent, divided by its squared mean brightness. Without that division, a frame 40% darker scored 0.36× and looked blurry.
+- **Threshold is relative:** a frame is blurry when its score is below `BLUR_RATIO = 0.5` × the 90th percentile of scores from the **same view** in the last `BLUR_WINDOW_MS = 8000`. A new view (thumbnail `viewChange` > 0.5, which blur barely affects) resets the reference, because scenes differ a lot: a sharp parking-lot photo scored 186, the atrium 4,795. With fewer than `BLUR_MIN_HISTORY = 4` scores, every frame counts as sharp.
+- **Calibration:** 29 photos, with synthetic blur at 160 px. At 0.5×, the gate caught 29/29 box-blurred, 27/29 with 9 px and 25/29 with 5 px horizontal motion blur, and wrongly skipped 0/29 for camera shake (lowest 0.62×) or brightness changes. Horizontal motion blur slips through on scenes made of mostly horizontal lines (e.g. the corridor at 0.64×).
+- **Motion:** a gyroscope `rotationRate` above `MAX_TURN_RATE = 90`°/s counts as blurry regardless of the score.
+- **Flow:** a blurry frame isn't sent and is re-checked after `BLUR_RETRY_MS = 100`. After `BLUR_FALLBACK_MS = 2000` with nothing sharp, the sharpest skipped frame is sent, so the app is never blind for long.
+- **Hint:** after `HINT_AFTER_MS = 3000` of continuous blur, `Speech.say('Hold the phone steady.')`, at most once per `HINT_COOLDOWN_MS = 15000`, and only with Voice on. It isn't added to `said`. While blurry, the status shows "Live · hold steady (blurry)".
+- **🐞 overlay:** a `blur:` line with the verdict, sharpness, threshold, skip count and turn rate.
+- **Tests:** 14 checks in the fake browser (in `orient_test.cjs`). Not yet tuned on a real phone camera: real motion blur and noise in low light may need a different `BLUR_RATIO`.
+
 ### `narrator/public/beeper.js` (`window.Beeper`, `beepParams` also exported for Node)
 - Readings come from `EventSource('/api/distance/stream')`, opened by `Beeper.start()` (in `start()`) and closed by `Beeper.stop()`.
 - **Stale:** no reading for 1.5 s (`STALE_MS`) means silent, and the header chip says "sensor offline".
@@ -266,7 +281,7 @@ handleReply():
 | Early speech: start generating in `describe()` | Without it, generation only starts after the reply has gone to the phone and the phone has asked for audio, which costs one phone↔laptop round trip. Measured from the reply reaching the phone to its first audio byte, over 6–7 real alerts, with a simulated 150 ms hop each way: median 901 ms → 510 ms. With no network hop, no difference (328 vs 351 ms, noise). |
 | Raw PCM streaming instead of MP3 | With MP3, the browser had to download and decode the whole clip before playing: about 0.7–0.9 s plus decode time. The PCM stream's first chunk arrives in about 0.2 s and is played at once. |
 | `[rapidly]` tag for faster speech | v4 Turbo ignores `voice_settings.speed` but follows an audio tag, which isn't spoken (checked with `scribe_v2` transcripts). Measured on 3 alerts: no tag 10.16 s, `[speaking quickly]` 8.32 s, `[fast-paced]` 8.32 s, `[speaking very quickly]` 7.52 s, **`[rapidly]` 7.44 s**. Faster still but less natural: `ELEVENLABS_MODEL=eleven_flash_v2_5`, 6.46 s at speed 1.2. ElevenLabs rejects speeds above 1.2 (400 `invalid_voice_settings`). |
-| Pause image sending while speaking (`PAUSE_WHILE_SPEAKING` in `app.js`) | User request: each alert is heard in full before the app looks again. `loop()` sends no frames while `Speech.pending > 0` and voice is on; requests already in flight still finish. Trade-off: nothing new is detected during speech, typically 2–3 s per alert. `speech.js` gives up on a download that receives nothing for `STALL_MS = 8000`, so a hung request can't pause the camera forever. |
+| Pause image sending while speaking (**"Pause while speaking" toggle**, `#pauseSpeaking`, default on, saved as `localStorage` `pauseWhileSpeaking`; variable `pauseWhileSpeaking` in `app.js`) | User request: each alert is heard in full before the app looks again; the user later asked for it to be switchable. `loop()` sends no frames while `Speech.pending > 0` and voice is on; requests already in flight still finish. Trade-off: nothing new is detected during speech, typically 2–3 s per alert. `speech.js` gives up on a download that receives nothing for `STALL_MS = 8000`, so a hung request can't pause the camera forever. |
 | Speech queue: in order, nothing dropped, every clip generated as soon as it is queued | User requirement: no alert is lost. Generating ahead means the next clip is ready when the current one ends. Interrupt mode is opt-in. In queue mode, speech can fall behind if alerts come faster than they can be spoken; the voice chip shows how many are queued. |
 | Web Audio API for playback, unlocked in the Start tap | iOS Safari only plays sound started from a user tap. One `AudioContext` resumed in the tap can play every later clip; new `<audio>` elements created later would be blocked. |
 | Zero dependencies | Runs anywhere with Node 18+. No build step. |

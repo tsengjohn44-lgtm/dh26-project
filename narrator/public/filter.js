@@ -65,7 +65,28 @@
     return 1 - ab / Math.sqrt(aa * bb + 1e-9);
   }
 
-  const api = { isNothing, isRepeat, classifyReply, finalizeReply, viewChange, cautiousStairCount };
+  // Focus / motion-blur measure: variance of the Laplacian over a grayscale image (row-major,
+  // w x h). Sharp edges give large positive and negative Laplacian values, blur flattens them,
+  // so a lower score means blurrier. Divided by the squared mean brightness: otherwise a frame
+  // 40% darker (shade, exposure change) scores 0.36x and looks "blurry". Only comparable between
+  // frames of similar content: a sharp photo of a blank wall also scores low (app.js compares
+  // against recent frames).
+  function sharpness(gray, w, h) {
+    let sum = 0, sumSq = 0, n = 0, bright = 0;
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x;
+        const lap = 4 * gray[i] - gray[i - 1] - gray[i + 1] - gray[i - w] - gray[i + w];
+        sum += lap; sumSq += lap * lap; bright += gray[i]; n++;
+      }
+    }
+    if (!n) return 0;
+    const mean = sum / n;
+    const level = Math.max(bright / n, 16); // floor: near-black frames don't blow up
+    return ((sumSq / n - mean * mean) / (level * level)) * 1000;
+  }
+
+  const api = { isNothing, isRepeat, classifyReply, finalizeReply, viewChange, cautiousStairCount, sharpness };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.Filter = api;
 })(this);

@@ -154,8 +154,7 @@ function grabThumb() {
 }
 
 // Start a new view when the camera now sees something clearly different.
-function checkViewChange() {
-  const thumb = grabThumb();
+function checkViewChange(thumb) {
   if (viewThumb && Filter.viewChange(viewThumb, thumb) <= VIEW_CHANGE) return;
   if (viewThumb) {
     viewId++;
@@ -177,11 +176,111 @@ class HttpError extends Error {
   constructor(message, retryAfterMs) { super(message); this.retryAfterMs = retryAfterMs; }
 }
 
-async function sendFrame(id) {
+// ---------- blur gate ----------
+// Blurry frames (motion while walking or swinging the phone, out of focus) aren't sent: tested
+// on blurred photos, Perceptron lost room numbers, halved a stair count and invented "cars
+// approaching". Sharpness (Filter.sharpness, edge strength on a 160x120 copy) is judged against
+// recent frames *of the same view*, since a sharp blank wall also scores low. Calibrated on 29
+// photos: at 0.5x, 25/29 with 5 px motion blur and 29/29 defocused were caught, and no camera
+// shake or brightness change was wrongly skipped.
+const BLUR_RATIO = 0.5;          // blurry when below this x the 90th percentile of recent scores
+const BLUR_WINDOW_MS = 8000;     // recent = scores from the same view in the last 8 s
+const BLUR_MIN_HISTORY = 4;      // with fewer scores than this, every frame counts as sharp
+const MAX_TURN_RATE = 90;        // deg/s from the gyroscope: faster = motion blur, whatever the score
+const BLUR_FALLBACK_MS = 2000;   // nothing sharp for this long: send the sharpest frame seen
+const BLUR_RETRY_MS = 100;       // after a blurry frame, look again this soon
+const HINT_AFTER_MS = 3000;      // blurry this long: speak the hint
+const HINT_COOLDOWN_MS = 15000;
+const HINT_TEXT = 'Hold the phone steady.';
+const SHARP_W = 160, SHARP_H = 120;
+const SKIPPED = 'skipped';
+
+const sharpCanvas = document.createElement('canvas');
+const sharpCtx = sharpCanvas.getContext('2d', { willReadFrequently: true });
+let blurScores = [];   // { t, score } for the current blur reference view
+let blurView = null;   // thumbnail the blur reference belongs to
+let windowStart = 0;   // start of the current wait for a sharp frame
+let blurSince = null;  // when the current run of blurry frames began (null: last frame sharp)
+let bestBlurry = null; // sharpest skipped frame of the current window: { image, thumb, score }
+let lastHint = -Infinity;
+let turnRate = 0;      // deg/s, latest gyroscope reading
+const blurStats = { verdict: '-', score: 0, threshold: 0, skipped: 0 };
+
+window.addEventListener('devicemotion', (e) => {
+  const r = e.rotationRate;
+  if (r && r.alpha !== null) turnRate = Math.hypot(r.alpha || 0, r.beta || 0, r.gamma || 0);
+});
+
+function frameSharpness() {
+  sharpCanvas.width = SHARP_W;
+  sharpCanvas.height = SHARP_H;
+  sharpCtx.drawImage(canvas, 0, 0, SHARP_W, SHARP_H); // canvas holds the frame just grabbed
+  const px = sharpCtx.getImageData(0, 0, SHARP_W, SHARP_H).data;
+  const gray = new Float32Array(SHARP_W * SHARP_H);
+  for (let i = 0; i < gray.length; i++) gray[i] = 0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2];
+  return Filter.sharpness(gray, SHARP_W, SHARP_H);
+}
+
+// 'sharp' | 'blurry' | 'motion' for a frame with this thumbnail and sharpness score.
+function judgeBlur(thumb, score, now) {
+  if (!blurView || Filter.viewChange(blurView, thumb) > VIEW_CHANGE) { blurView = thumb; blurScores = []; } // new scene: new reference
+  blurScores = blurScores.filter((s) => now - s.t <= BLUR_WINDOW_MS);
+  const sorted = blurScores.map((s) => s.score).sort((a, b) => a - b);
+  const reference = sorted.length ? sorted[Math.floor(0.9 * (sorted.length - 1))] : 0;
+  const enough = sorted.length >= BLUR_MIN_HISTORY;
+  blurScores.push({ t: now, score });
+  blurStats.score = score;
+  blurStats.threshold = enough ? reference * BLUR_RATIO : 0;
+  if (turnRate > MAX_TURN_RATE) return 'motion';
+  return enough && score < reference * BLUR_RATIO ? 'blurry' : 'sharp';
+}
+
+function maybeHint(now) {
+  if (blurSince === null || now - blurSince < HINT_AFTER_MS || now - lastHint < HINT_COOLDOWN_MS) return;
+  lastHint = now;
+  if (Speech.enabled) Speech.say(HINT_TEXT); // spoken only: not a scene alert, not added to `said`
+}
+
+function resetBlur() {
+  blurScores = []; blurView = null; windowStart = 0; blurSince = null; bestBlurry = null;
+}
+
+// Grab a frame and decide whether to send it: { image, thumb } to send, SKIPPED (blurry, look
+// again soon) or null (no camera frame yet).
+function pickFrame() {
   const image = grabFrame();
-  if (!image) return; // camera starting or switching
+  if (!image) return null; // camera starting or switching
+  const thumb = grabThumb();
+  const now = performance.now();
+  if (!windowStart) windowStart = now;
+  const score = frameSharpness();
+  const verdict = judgeBlur(thumb, score, now);
+  if (verdict === 'sharp') {
+    blurSince = null;
+    blurStats.verdict = 'sharp';
+    if (statusEl.textContent.includes('hold steady')) setStatus('Live', true);
+  } else {
+    blurStats.skipped++;
+    if (blurSince === null) blurSince = now;
+    if (!bestBlurry || score > bestBlurry.score) bestBlurry = { image, thumb, score };
+    maybeHint(now);
+    if (now - windowStart < BLUR_FALLBACK_MS) {
+      blurStats.verdict = verdict === 'motion' ? `skipped: phone moving ${Math.round(turnRate)}°/s` : 'skipped: blurry';
+      if (!speaking()) setStatus('Live · hold steady (blurry)', true);
+      return SKIPPED;
+    }
+    blurStats.verdict = 'sent sharpest of the last 2 s (all blurry)';
+  }
+  const frame = verdict === 'sharp' ? { image, thumb } : bestBlurry;
+  windowStart = now;
+  bestBlurry = null;
+  return frame;
+}
+
+async function sendFrame(id, frame) {
+  const { image, thumb } = frame;
   if (debugMode) $('debugFrame').src = image; // exactly what Perceptron is sent
-  checkViewChange();
+  checkViewChange(thumb);
   const t0 = performance.now();
   const seq = ++sentSeq;
   const view = viewId;
@@ -262,18 +361,21 @@ function pushHistory(text) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// While an alert is being spoken (or waiting to be), no new frames are sent: the user hears
-// each alert in full before the app looks again. Requests already in flight still finish.
-// Trade-off: nothing new is detected during speech (typically 2-3 s per alert).
-const PAUSE_WHILE_SPEAKING = true;
-const speaking = () => PAUSE_WHILE_SPEAKING && Speech.enabled && Speech.pending > 0;
+// "Pause while speaking" toggle (default on): while an alert is being spoken (or waiting to be),
+// no new frames are sent, so the user hears each alert in full before the app looks again.
+// Requests already in flight still finish. Trade-off: nothing new is detected during speech
+// (typically 2-3 s per alert); turn it off to keep looking while the voice talks.
+let pauseWhileSpeaking = true;
+const speaking = () => pauseWhileSpeaking && Speech.enabled && Speech.pending > 0;
 
 async function loop(id) {
   while (running && id === runId) {
     if (speaking()) {
       if (!statusEl.textContent.includes('speaking')) setStatus('Live · paused while speaking', true);
     } else if (inFlight.size < MAX_IN_FLIGHT && performance.now() >= pausedUntil) {
-      sendFrame(id);
+      const frame = pickFrame();
+      if (frame === SKIPPED) { await sleep(BLUR_RETRY_MS); continue; } // blurry: look again soon
+      if (frame) sendFrame(id, frame);
     }
     await sleep(speaking() ? 100 : Number(intervalInput.value)); // resume promptly when speech ends
   }
@@ -404,6 +506,7 @@ function renderDiag() {
     `screen ${screen.orientation?.type ?? '-'} ${screenAngle()}° · window.orientation ${window.orientation ?? '-'}`,
     `fullscreen ${document.fullscreenElement ? 'on' : 'off'} · lock ${diag.lock}`,
     `camera frame rotation ${diag.frame || '-'}`,
+    `blur: ${blurStats.verdict} · sharpness ${blurStats.score.toFixed(1)} (blurry below ${blurStats.threshold ? blurStats.threshold.toFixed(1) : '-'}) · skipped ${blurStats.skipped} · turning ${Math.round(turnRate)}°/s`,
     `flip correction ${FLIP_CORRECTION ? (frameTurn ? 'ON (turning image 180°)' : 'off (image upright)') : 'disabled (not Android)'}`,
     `video ${video.videoWidth}×${video.videoHeight} · track ${s.width ?? '-'}×${s.height ?? '-'} ${s.facingMode ?? ''}`,
     `phone held: ${diag.holding} (gravity x,y,z ${diag.gravity}) · camera reopens ${diag.reopens}`,
@@ -532,6 +635,7 @@ function resetView() {
   viewThumb = null;
   said = [];
   prevFrame = null;
+  resetBlur();
 }
 
 function stop() {
@@ -586,6 +690,15 @@ voiceBox.addEventListener('change', () => {
 interruptBox.addEventListener('change', () => {
   Speech.interrupt = interruptBox.checked;
   savePref('interrupt', interruptBox.checked);
+});
+
+const pauseBox = $('pauseSpeaking');
+pauseBox.checked = loadPref('pauseWhileSpeaking', true);
+pauseWhileSpeaking = pauseBox.checked;
+pauseBox.addEventListener('change', () => {
+  pauseWhileSpeaking = pauseBox.checked;
+  savePref('pauseWhileSpeaking', pauseBox.checked);
+  if (!pauseWhileSpeaking && statusEl.textContent.includes('paused while speaking')) setStatus('Live', running);
 });
 
 function renderVoice() {
