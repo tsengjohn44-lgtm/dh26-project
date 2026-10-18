@@ -52,6 +52,15 @@
       <label class="toggle"><input id="voice" type="checkbox" checked> <span>Voice</span></label>
       <label class="toggle"><input id="interrupt" type="checkbox"> <span>Interrupt</span></label>
       <label class="toggle"><input id="pauseSpeaking" type="checkbox" checked> <span>Pause while speaking</span></label>
+      <label class="toggle select">
+        <span>Reasoning</span>
+        <select id="reasoning" aria-label="Perceptron reasoning: off is fastest, high is most thorough but slowest">
+          <option value="none">Off (fast)</option>
+          <option value="hybrid">Fast + Low</option>
+          <option value="low">Low (~1.3 s)</option>
+          <option value="high">High (~5 s)</option>
+        </select>
+      </label>
     </div>
     <button id="start" class="start">Start</button>
     <label class="gap">

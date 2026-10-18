@@ -160,6 +160,15 @@ html, body {
 }
 .toggle { display: flex; align-items: center; gap: 8px; }
 .toggle input { width: 22px; height: 22px; margin: 0; accent-color: var(--accent); }
+.toggle.select select {
+  min-height: 36px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--muted);
+  background: var(--panel);
+  color: var(--fg);
+  font-size: 15px;
+}
 
 .gap {
   display: flex;

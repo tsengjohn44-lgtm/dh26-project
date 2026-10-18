@@ -16,14 +16,20 @@
   );
   const isClose = (text) => /\bclose\b/i.test(text);
 
+  // Direction words. With { refine: true } (the slower reasoning reply in "Fast + Low" mode), a
+  // direction the earlier alert lacked makes the reply new: it is a correction ("arrow right"
+  // after "arrow left"), even though most other words match.
+  const DIRECTIONS = new Set(['left', 'right', 'up', 'down']);
+
   // A reply restates an earlier alert when most of its content words were already in it,
   // unless it adds a new number (e.g. a room number) or the hazard has now become "close".
-  function isRepeat(text, earlier) {
+  function isRepeat(text, earlier, { refine = false } = {}) {
     const words = contentWords(text);
     if (!words.size) return false;
     return earlier.some((old) => {
       const oldWords = contentWords(old);
       if ([...words].some((w) => /\d/.test(w) && !oldWords.has(w))) return false;
+      if (refine && [...words].some((w) => DIRECTIONS.has(w) && !oldWords.has(w))) return false;
       const shared = [...words].filter((w) => oldWords.has(w)).length;
       if (shared / words.size < 0.6) return false;
       return !(isClose(text) && !isClose(old));
@@ -44,10 +50,10 @@
   }
 
   // { text, reason }: text is the alert to show, or null with reason 'n/a' | 'repeat'.
-  function classifyReply(raw, said) {
+  function classifyReply(raw, said, options = {}) {
     const text = String(raw).replace(/\s+/g, ' ').trim().replace(/^"([^"]*)"$/, '$1').trim();
     if (!text || isNothing(text)) return { text: null, reason: 'n/a' };
-    if (isRepeat(text, said)) return { text: null, reason: 'repeat' };
+    if (isRepeat(text, said, options)) return { text: null, reason: 'repeat' };
     return { text: cautiousStairCount(text), reason: 'new' };
   }
   const finalizeReply = (raw, said) => classifyReply(raw, said).text;
@@ -62,7 +68,15 @@
     ma /= n; mb /= n;
     let ab = 0, aa = 0, bb = 0;
     for (let i = 0; i < n; i++) { const x = a[i] - ma, y = b[i] - mb; ab += x * y; aa += x * x; bb += y * y; }
-    return 1 - ab / Math.sqrt(aa * bb + 1e-9);
+    // A flat (featureless) image has no pattern to correlate: without this, two dark/blank frames
+    // (phone face down, covered lens, dark room) scored 1 = "unrelated", so every frame became a
+    // new view and the same alert was spoken again and again. Two flat frames: same view, unless
+    // their brightness differs a lot. One flat and one not: different.
+    const FLAT = 3 * 3 * n; // standard deviation under ~3 grey levels
+    const flatA = aa < FLAT, flatB = bb < FLAT;
+    if (flatA && flatB) return Math.abs(ma - mb) > 40 ? 1 : 0;
+    if (flatA !== flatB) return 1;
+    return 1 - ab / Math.sqrt(aa * bb);
   }
 
   // Focus / motion-blur measure: variance of the Laplacian over a grayscale image (row-major,

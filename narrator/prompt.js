@@ -40,6 +40,17 @@ n/a`;
 
 const isImageDataUrl = (v) => typeof v === 'string' && v.startsWith('data:image/');
 
+// Reasoning levels offered in the app. Measured on 4 photos x 2 runs (median / max per frame,
+// output tokens): none 0.48 / 0.62 s, 17 tokens; low 1.3 / 4.4 s, 323 (max 1372) tokens, read a
+// sign's arrow correctly where none got it wrong; high 4.9 / 5.4 s, ~1560 tokens, most detail.
+// With a 2048-token cap there were no empty answers (0/16).
+const REASONING_LEVELS = ['none', 'low', 'high'];
+const REASONING_BUDGET = 2048;
+// Added for Low only. Measured: median 2.1 s -> 1.35 s, worst 6.9 s -> 3.0 s, thinking tokens
+// ~330 -> ~170, answers still correct. High ignores it (always ~1560 tokens). A hard token cap
+// instead (400) gave empty answers in 2/8 runs.
+const BRIEF_REASONING = '\n\nThink briefly: at most 3 short sentences of reasoning, then answer.';
+
 // body: { image, prevImage?, prevDtMs?, said?: string[] }  ->  payload, or throws on bad input.
 function buildPayload(body, model) {
   if (!isImageDataUrl(body.image)) throw new Error('Expected { image: "data:image/..." }');
@@ -62,16 +73,19 @@ function buildPayload(body, model) {
   ].filter(Boolean).join('\n\n');
 
   // `max_completion_tokens` is Perceptron's output cap (`max_tokens` is not in its schema).
-  // Reasoning off: it adds latency and is not needed here. Low temperature cuts rewordings
-  // of the same scene that would read as "new". Not streamed: replies are a few words.
+  // Reasoning is chosen in the app (Off / Low / High). Reasoning tokens count toward the cap, so
+  // with reasoning it is raised from 40 to REASONING_BUDGET (40 would leave an empty answer).
+  // Low temperature cuts rewordings of the same scene that would read as "new". Not streamed:
+  // replies are a few words.
+  const reasoning = REASONING_LEVELS.includes(body.reasoning) ? body.reasoning : 'none';
   return {
     model,
     stream: false,
-    reasoning_effort: 'none',
+    reasoning_effort: reasoning,
     temperature: 0.2,
-    max_completion_tokens: 40,
+    max_completion_tokens: reasoning === 'none' ? 40 : REASONING_BUDGET,
     messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: reasoning === 'low' ? SYSTEM_PROMPT + BRIEF_REASONING : SYSTEM_PROMPT },
       { role: 'user', content: [media, { type: 'text', text }] },
     ],
   };
@@ -84,4 +98,4 @@ function cleanSaid(said) {
     .map((s) => s.trim().slice(0, 200));
 }
 
-module.exports = { SYSTEM_PROMPT, MAX_SAID, buildPayload };
+module.exports = { SYSTEM_PROMPT, MAX_SAID, REASONING_LEVELS, REASONING_BUDGET, BRIEF_REASONING, buildPayload };

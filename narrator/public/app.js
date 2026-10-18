@@ -25,6 +25,7 @@ const MAX_SIDE = 768; // at 512 the model misread room numbers ("71A" as "714");
 const JPEG_QUALITY = 0.7;
 const HISTORY_LEN = 4;
 const REQUEST_TIMEOUT_MS = 20000;
+const REASONING_TIMEOUT_MS = 30000; // with Low/High reasoning a frame can take several seconds
 const MAX_IN_FLIGHT = 3;       // the API answered 3 concurrent requests about as fast as 1
 const MAX_SAID = 5;            // recent alerts sent back so the model doesn't repeat itself
 const MAX_PREV_FRAME_AGE = 4000; // older previous frames are too stale to judge motion from
@@ -286,8 +287,13 @@ async function sendFrame(id, frame) {
   const view = viewId;
   const size = `${canvas.width}x${canvas.height}`;
 
+  // 'none' | 'low' | 'high' (see prompt.js), or 'hybrid' ("Fast + Low"): this request without
+  // reasoning, plus a parallel Low-reasoning request for the same frame (sendSlow).
+  const hybrid = reasoningSelect.value === 'hybrid';
+  const reasoning = hybrid ? 'none' : reasoningSelect.value;
+  const body = { image, said, reasoning };
+  if (hybrid && slowInFlight.size < MAX_SLOW_IN_FLIGHT) sendSlow(id, seq, view, { image, said }, t0);
   // Perceptron rejects clips whose frames differ in size (e.g. after the phone rotates).
-  const body = { image, said };
   if (MOTION_FRAMES && prevFrame && prevFrame.size === size && t0 - prevFrame.t <= MAX_PREV_FRAME_AGE) {
     body.prevImage = prevFrame.image;
     body.prevDtMs = Math.round(t0 - prevFrame.t);
@@ -296,7 +302,7 @@ async function sendFrame(id, frame) {
 
   const controller = new AbortController();
   inFlight.add(controller);
-  const timer = setTimeout(() => controller.abort(new Error('Request timed out')), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(new Error('Request timed out')), reasoning === 'none' ? REQUEST_TIMEOUT_MS : REASONING_TIMEOUT_MS);
   try {
     const res = await fetch('/api/describe', {
       method: 'POST',
@@ -344,12 +350,64 @@ function handleReply(seq, view, reply, totalMs, apiMs) {
     return;
   }
   setStatus('Live', true);
+  showAlert(text);
+}
+
+// Show and speak a new alert; the previous one moves to history.
+function showAlert(text) {
   const shown = currentEl.dataset.alert;
   if (shown) pushHistory(shown);
   currentEl.textContent = text;
   currentEl.dataset.alert = text;
   said = [...said, text].slice(-MAX_SAID);
   Speech.say(text);
+}
+
+// ---------- "Fast + Low" (hybrid) reasoning ----------
+// The Low-reasoning reply for a frame arrives ~1 s after the fast one and only adds or corrects
+// (e.g. "arrow right" where the fast reply said "arrow left"). It has its own ordering: newer
+// fast replies always arrive first, so the fast `shownSeq` check would discard every one.
+const MAX_SLOW_IN_FLIGHT = 2;   // keeps fast + slow under Perceptron's 300 requests/min
+const SLOW_MAX_AGE_MS = 4000;   // a refinement older than this describes a moment long gone
+const slowInFlight = new Set();
+let shownSlowSeq = 0;
+const slowStats = { ms: 0, spoken: 0, suppressed: 0, stale: 0 };
+
+async function sendSlow(id, seq, view, { image, said: saidThen }, t0) {
+  const controller = new AbortController();
+  slowInFlight.add(controller);
+  const timer = setTimeout(() => controller.abort(new Error('Request timed out')), REASONING_TIMEOUT_MS);
+  try {
+    const res = await fetch('/api/describe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image, said: saidThen, reasoning: 'low' }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      if (res.status === 429) pausedUntil = performance.now() + Math.max(2000, Number(res.headers.get('retry-after')) * 1000 || 0);
+      return;
+    }
+    const reply = await res.text();
+    if (id !== runId) return;
+    handleSlowReply(seq, view, reply, t0);
+  } catch {
+    /* refinements are optional: the fast path already reported this frame */
+  } finally {
+    clearTimeout(timer);
+    slowInFlight.delete(controller);
+  }
+}
+
+function handleSlowReply(seq, view, reply, t0) {
+  const age = performance.now() - t0;
+  slowStats.ms = Math.round(age);
+  if (view !== viewId || age > SLOW_MAX_AGE_MS || seq < shownSlowSeq) { slowStats.stale++; return; }
+  shownSlowSeq = seq;
+  const { text } = Filter.classifyReply(reply, said, { refine: true });
+  if (!text) { slowStats.suppressed++; return; }
+  slowStats.spoken++;
+  showAlert(text);
 }
 
 function pushHistory(text) {
@@ -506,6 +564,7 @@ function renderDiag() {
     `screen ${screen.orientation?.type ?? '-'} ${screenAngle()}° · window.orientation ${window.orientation ?? '-'}`,
     `fullscreen ${document.fullscreenElement ? 'on' : 'off'} · lock ${diag.lock}`,
     `camera frame rotation ${diag.frame || '-'}`,
+    ...(reasoningSelect.value === 'hybrid' ? [`fast + low: last low reply ${slowStats.ms} ms · spoken ${slowStats.spoken} · suppressed ${slowStats.suppressed} · too late ${slowStats.stale} · in flight ${slowInFlight.size}`] : []),
     `blur: ${blurStats.verdict} · sharpness ${blurStats.score.toFixed(1)} (blurry below ${blurStats.threshold ? blurStats.threshold.toFixed(1) : '-'}) · skipped ${blurStats.skipped} · turning ${Math.round(turnRate)}°/s`,
     `flip correction ${FLIP_CORRECTION ? (frameTurn ? 'ON (turning image 180°)' : 'off (image upright)') : 'disabled (not Android)'}`,
     `video ${video.videoWidth}×${video.videoHeight} · track ${s.width ?? '-'}×${s.height ?? '-'} ${s.facingMode ?? ''}`,
@@ -644,6 +703,8 @@ function stop() {
   resetView();
   for (const c of inFlight) c.abort();
   inFlight.clear();
+  for (const c of slowInFlight) c.abort();
+  slowInFlight.clear();
   Speech.cancel();
   Beeper.stop();
   stopCamera();
@@ -690,6 +751,16 @@ voiceBox.addEventListener('change', () => {
 interruptBox.addEventListener('change', () => {
   Speech.interrupt = interruptBox.checked;
   savePref('interrupt', interruptBox.checked);
+});
+
+// Perceptron reasoning: Off (fast, default) / Low / High. Saved on the device.
+const reasoningSelect = $('reasoning');
+try {
+  const saved = localStorage.getItem('reasoning');
+  if (['none', 'low', 'high', 'hybrid'].includes(saved)) reasoningSelect.value = saved;
+} catch { /* storage blocked */ }
+reasoningSelect.addEventListener('change', () => {
+  try { localStorage.setItem('reasoning', reasoningSelect.value); } catch { /* storage blocked */ }
 });
 
 const pauseBox = $('pauseSpeaking');
