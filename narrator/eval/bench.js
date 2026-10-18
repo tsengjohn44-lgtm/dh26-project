@@ -15,6 +15,14 @@ const CONFIGS = [
   { model: 'lite2', delegate: 'CPU', on: false },
 ];
 const DET_SCORE_MIN = 0.35; // same as detector.js, listed with the results for reference
+// A detector that hasn't loaded by then is reported as failed and the next one runs. On iPhone
+// Safari, Lite2 on GPU stayed at "Loading…" with nothing to show for the runs before it.
+const LOAD_TIMEOUT_MS = 45000;
+
+const withTimeout = (promise, ms, what) => Promise.race([
+  promise,
+  new Promise((_, reject) => setTimeout(() => reject(new Error(`${what} did not load within ${ms / 1000} s`)), ms)),
+]);
 
 const name = (c) => `${c.model} ${c.delegate}`;
 const median = (xs) => { const s = [...xs].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
@@ -75,7 +83,7 @@ async function benchOne(config, source) {
   const t0 = performance.now();
   let det;
   try {
-    det = await Detector.createDetector(config);
+    det = await withTimeout(Detector.createDetector(config), LOAD_TIMEOUT_MS, name(config));
   } catch (e) {
     return { name: name(config), error: e.message || String(e) };
   }
@@ -138,11 +146,13 @@ async function run(sourceName) {
     setStatus(sourceName === 'camera' ? 'Opening camera…' : 'Loading test images…');
     const source = sourceName === 'camera' ? { video: await openCamera() } : { images: await loadImageFrames() };
     const rows = [];
-    for (const c of CONFIGS.filter((x) => x.on)) {
-      setStatus(`Loading ${name(c)}…`);
+    const todo = CONFIGS.filter((x) => x.on);
+    for (const [i, c] of todo.entries()) {
+      setStatus(`Loading ${name(c)} (${i + 1} of ${todo.length})…`);
       rows.push(await benchOne(c, source));
+      report(env, sourceName, rows); // show each result as it lands, not only at the end
     }
-    report(env, sourceName, rows);
+    window.__bench.done = true;
     setStatus('Done.');
   } catch (e) {
     setStatus(`Error: ${e.message || e}`);

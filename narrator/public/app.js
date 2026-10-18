@@ -50,6 +50,9 @@ const DETECTOR_MODEL = params.get('model') || 'lite2-f16';
 const DETECT_FPS = 15;      // cap: plenty for walking speed, and saves battery and heat
 const SLOW_DETECT_MS = 125; // slower than ~8 fps the live line lags behind: drop to Lite0
 const SLOW_CHECK_FRAMES = 30;
+// Covers the first download (11 MB runtime + up to 12 MB model) on slow Wi-Fi; after that the
+// browser cache makes loading take about a second.
+const GPU_LOAD_TIMEOUT_MS = 20000;
 
 let stream = null;
 let facing = 'environment';
@@ -274,12 +277,17 @@ async function startDetector(id) {
   detectorLoop(id);
 }
 
-// GPU first; if this browser can't run it there, the int8 Lite0 model on CPU (wasm).
+// GPU first; if this browser can't run it there, or it hasn't loaded within GPU_LOAD_TIMEOUT_MS
+// (Lite2 on GPU stayed at "Loading…" in iPhone Safari), the int8 Lite0 model on CPU (wasm).
 async function loadDetector(model) {
   try {
-    return await Detector.createDetector({ model, delegate: 'GPU' });
+    return await Promise.race([
+      Detector.createDetector({ model, delegate: 'GPU' }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`${model} GPU timed out`)), GPU_LOAD_TIMEOUT_MS)),
+    ]);
   } catch (e) {
     console.warn('GPU detector unavailable, using CPU', e);
+    detEl.textContent = 'Detector loading… (CPU)';
     return Detector.createDetector({ model: 'lite0', delegate: 'CPU' });
   }
 }
