@@ -99,6 +99,31 @@ Every rule fixed a measured problem; see the decisions table in `AGENTS.md`. The
 - 0 replies over 12 words; median time 609 → 639 ms
 - **Regressions:** an aerial crosswalk photo and distant cyclists came back `n/a` instead of being reported
 
+### Distance sensor context (`sensor`, optional)
+
+When Settings → Proximity sensor → **Share distance with AI** is on (default) and the ESP8266 has a valid reading, each request carries `sensor: { distanceM, heightM }`. This applies to narration, the Fast + Low reasoning request and spoken questions.
+- **Valid** means all of these (`Beeper.reading`): a number, not `Out_of_Range`; between 2 cm and 4 m; at most 1.5 s old. Otherwise the field is left out and the request is exactly as before.
+- **`heightM`** is Settings → **Sensor height** (0.1–2 m, default 1 m), so the model knows what the beam can hit.
+- **Server:** `prompt.js` `cleanSensor` checks the ranges again (distance 0.02–4.5 m, height 0–3 m) and `sensorText` adds one paragraph to the **user** message. The system prompt is unchanged, so it stays identical between requests, and requests without a reading are unaffected.
+- **What the paragraph says:**
+  - the sensor's mounting height and reading
+  - the person already hears this distance as beeps
+  - use the reading only to confirm that something in the **center** of the frame is close (within ~1.5 m)
+  - if nothing there looks that close, ignore the reading: never attribute it to objects at the sides or farther away, never invent an object
+  - it says nothing about the ground: curbs, steps and holes can be close even when the reading is far
+  - **never say the number** (for spoken questions: only if the question asks how far, and roughly)
+
+**Measured** (real API, 2026-10-18, same session, sensor at 1 m):
+- **Numbers spoken: 0** in every reply with a reading (over 40 replies).
+- **Latency:** unchanged (medians 395–461 ms without vs 438–449 ms with, across three runs: noise).
+- **Real close obstacle** (construction fence, reading 0.9 m): "Obstacle: fence close ahead." 4/4 with the reading, vs 1/2 without (the other was `n/a`).
+- **Contradicting readings** (reading 0.6 m on open views with nothing near: corridor, parking lot, street, concourse):
+  - first wording: **9/12 invented "close" obstacles**, e.g. "Obstacle: car close ahead." for a car across the street, "glass wall close ahead" for a wall at the side
+  - after the "center only, otherwise ignore" wording: **1/12** (the street car, once)
+  - In real use the reading usually agrees with the scene; a disagreement means something the camera can't see (glass, a hand, a tilted phone hitting the floor), and then saying nothing is right.
+- **Ground hazards** (reading 3.5–4 m, i.e. the beam passes over them): stairs unchanged 4/4. The curb was called "close" in 2/4 runs with the reading vs 3/4 without, and the pothole was missed once in 4 (0 without): within noise, but worth watching.
+- **Side effect found and fixed:** with the paragraph, stairs going down were labelled "Trip hazard" in 7/16 replies (0/8 without). `filter.js` `fixStairLabel` now enforces the direction rule in code (below).
+
 ## 6. Reasoning modes (Settings → Vision → Reasoning)
 
 | Mode | What it sends | Typical time per frame | Notes |
@@ -121,6 +146,7 @@ Every rule fixed a measured problem; see the decisions table in `AGENTS.md`. The
   - with `refine` (Fast + Low reasoning replies), a new direction word (arrow left → right)
 - **Labels and comparison:** the hazard label is removed before comparing words, so "Trip hazard: curb" vs "Trip hazard: step" stays new. An alert that is nothing but label and filler (e.g. "Trip hazard: step ahead.") repeats only an equally bare alert with the same label. `Filter.hazardLabel(text)` returns `trip | drop | head | moving | obstacle | null`.
 - **Stair counts** are multiplied by 0.75 and rounded down (`cautiousStairCount`), because the model overcounts short flights. Underestimating is safer.
+- **Stair labels** (`fixStairLabel`): the direction decides the label, enforced in code. "Trip hazard: stairs going down" becomes "Drop-off: stairs going down", and the reverse for stairs going up. It is left alone when both or neither direction appears. Applied before the repeat check, and to spoken-question answers (phone and server's early speech alike). 9 unit checks.
 
 ## 8. Perceptron facts that matter here
 
@@ -129,6 +155,29 @@ Every rule fixed a measured problem; see the decisions table in `AGENTS.md`. The
 - Reasoning tokens count toward that cap. With a cap of 40, reasoning returns empty answers.
 - **Stateless.** The rate limit is 300 requests/min per organization. Base64 data-URL images are accepted.
 - Image size matters more than prompt length: a 768 px frame is ~730 input tokens in total, and the whole prompt costs only ~45 ms.
+
+## Design decisions
+
+| Decision | Why | Rejected alternative / evidence |
+|---|---|---|
+| **4:3 at 1920×1440, widest lens** | A blind walker needs the widest view of the path. 4:3 uses the whole sensor on most phones; ultra-wide where the browser exposes it. | 16:9 crops the top and bottom, which is where the ground and head-height hazards are. |
+| **Frames at 768 px, JPEG 0.7** | Small enough to be fast, big enough for signs. | 512 px misread "71A" as "714" in 4/4 runs, for only ~170 ms saved. |
+| **Blur gate with a relative threshold** | Blurry frames gave wrong answers (lost room numbers, halved stair counts, invented cars). Sharpness depends hugely on the scene (186 for a parking lot, 4,795 for an atrium), so the threshold is relative to recent frames of the same view. | A fixed threshold would skip every frame of a plain wall and none of a busy street. |
+| **Send the sharpest frame after 2 s anyway** | Never leave the user blind for long; a slightly blurry answer beats none. | Waiting indefinitely for a sharp frame. |
+| **View change from 24×18 thumbnails** | Cheap enough for every frame (no API call). Correlation ignores exposure changes, so walking under shade doesn't reset. | Asking the model whether the scene changed: a second request per frame. Calibrated: 0/46 false resets, 240/253 real changes. |
+| **Up to 3 requests in flight, every 0.4 s** | The model takes ~0.5–0.9 s; overlapping requests cut scene-change → alert from 1.5–1.7 s to 0.7–1.5 s. 3 at once took about as long as 1. | One at a time (slow); more than 3 (8 at once inflated latency to ~6 s, and nears the 300/min rate limit). |
+| **Single frames, not 2-frame clips** | With clips the model called static scenes "approaching" 3/3 times. | Motion clips (code kept behind `MOTION_FRAMES = false`). |
+| **No streaming of replies** | Replies are a few words, and the whole reply is needed to filter repeats. | Streaming: saves ~0.1 s, complicates filtering. |
+| **`temperature: 0.2`** | Fewer rewordings of the same scene, which would slip past the repeat filter. | Default temperature. |
+| **Hazard labels, safety first** | A blind walker must know at once that an alert is a danger and what kind. Labelled hazards also jump the speech queue. | Plain priority list (kept as the "classic" style): 0/18 hazard photos labelled vs 18/18. |
+| **Template examples, never concrete ones** | The model copies concrete examples word for word (an example "crosswalk beyond it" appeared on photos with no crosswalk). | Concrete examples. |
+| **`n/a` when nothing new** | Silence is information too; talking constantly hides the important alerts. | Always describing the scene. |
+| **"Already said" limited to the current view, ≤5 alerts** | Enough to stop repeats; a new view starts fresh, so new places are always announced. | Global history: the model refused new places ("never mention again" made it answer `n/a` to a crosswalk after stairs). |
+| **Repeat filter in code as well as in the prompt** | The model still restates things in other words; 60% content-word overlap catches that, with exceptions for things that matter (a new number, "close", a new hazard label). | Trusting the prompt alone. |
+| **Stair count ×0.75 and stair labels fixed in code** | Both are safety rules the model breaks sometimes (overcounting short flights; mislabelling direction). Code enforces them every time. | Prompt wording alone did not fix either. |
+| **Reasoning off by default; Fast + Low for corrections** | Off is ~0.5 s; Low is ~1.35 s with 3–6 s outliers, too slow as the only path while walking. Fast + Low keeps the quick alert and lets the slower reply correct it (e.g. a sign's arrow direction). | Low or High by default. |
+| **Sensor reading in the user message, not the system prompt** | It changes every frame; the fixed system prompt stays identical between requests, and requests without a reading are unchanged. | Changing the system prompt per request. |
+| **Sensor reading only confirms what is visible** | The first wording made the model blame the reading on any object (9/12 invented "close" obstacles). The user hears the distance as beeps already, so the model's job is only to say *what* is close. | Letting the model trust the reading over the picture. |
 
 ## Not yet confirmed on a phone
 

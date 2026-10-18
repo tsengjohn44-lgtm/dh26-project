@@ -26,7 +26,7 @@ Code: `narrator/public/index.html`, `style.css`, `ui.js` (behaviour), `app.js` (
   - Android phones vibrate for 40 ms on each new alert, and new alerts slide in.
   - **Tap or press Enter to hear it again.**
 - **History** (`#history`): the last two alerts, faded. The app keeps four; CSS shows two.
-- **Bottom bar:** Voice (`#voice`), Start/Stop (`#start`, 88 px, red while running), Beeps (`#beeps`).
+- **Bottom bar:** Voice (`#voice`), **🎤 Ask** (`#ask`: tap once and speak, and the question is sent when you stop talking; tapping again sends at once, and holding sends on release; pulses red while listening; see [questions.md](questions.md)), Start/Stop (`#start`, 88 px, red while running), Beeps (`#beeps`).
 - **⇄** (`#flip`): switches between the front and rear cameras.
 
 ## Settings (⚙ → bottom sheet)
@@ -42,9 +42,11 @@ One scrolling list. It closes with ✕, a tap outside, Escape, or a swipe down o
 | Vision | Frame every (`#interval`): 0.3–3 s | 0.4 s |
 | Proximity sensor | Beep volume (`#beepVolume`) | 60% |
 | Proximity sensor | Intensity (`#beepIntensity`): 0.5–2× | 1.0× |
+| Proximity sensor | Share distance with AI (`#sensorToAi`): add the sensor reading to each request | on |
+| Proximity sensor | Sensor height (`#sensorHeight`): 0.1–2 m, how high the forward sensor is mounted | 1.00 m |
 | Diagnostics | Diagnostics overlay (`#debugBtn`) | off |
 
-All settings are saved on the phone (`localStorage` keys: `voice`, `interrupt`, `pauseWhileSpeaking`, `safetyLabels`, `reasoning`, `beeps`, `beepVolume`, `beepIntensity`, `debug`).
+All settings are saved on the phone (`localStorage` keys: `voice`, `interrupt`, `pauseWhileSpeaking`, `safetyLabels`, `reasoning`, `beeps`, `beepVolume`, `beepIntensity`, `sensorToAi`, `sensorHeight`, `debug`).
 
 ## Diagnostics overlay (`#debug`)
 
@@ -53,6 +55,7 @@ For testing on a device. It shows:
 - **Frames:** a thumbnail of the exact frame sent to Perceptron, and the version label (`VERSION` in `app.js`; fixed, to confirm the phone has the latest code)
 - **Orientation:** screen orientation, fullscreen and portrait-lock result (with the exact error if refused), the camera frame's rotation tag, how the phone is held, flip correction on/off, and the last 8 orientation, flip and lock events
 - **Blur:** verdict, sharpness vs threshold, skip count, turn rate
+- **Sensor → AI:** the distance and height sent with each frame, or why nothing is sent (off, sensor offline, out of range)
 - **Fast + Low:** reasoning reply time, and how many were spoken, suppressed or too late
 
 ## How it's built
@@ -77,6 +80,22 @@ For testing on a device. It shows:
 - Nothing is conveyed by colour alone: hazards are also in the text and spoken.
 - All animation is turned off under `prefers-reduced-motion`.
 - Safe-area insets are respected; layout checked at 360 and 412 px.
+
+## Design decisions
+
+| Decision | Why | Rejected alternative |
+|---|---|---|
+| **One main action (Start), everything else secondary** | The user is blind or low-vision: the screen must be usable by feel and with a screen reader. One big button in a fixed place, the three quick toggles beside it. | Several equal buttons; menus. |
+| **Settings in one scrolling sheet, no sub-menus** | Few settings, rarely changed; one list is easier to navigate with a screen reader than nested pages. | A settings page with sections; tabs. |
+| **Alert card large, with tap-to-repeat** | Low-vision users read the big text; blind users hear it, and can tap anywhere on the card to hear it again if they missed it. | Small captions; a separate repeat button. |
+| **Last two alerts visible, faded** | Context for a sighted helper or low-vision user, without competing with the current alert. | Full history list. |
+| **Amber edge + vibration for hazards** | A second channel besides speech; nothing relies on colour alone (the label is in the text and spoken). | Colour-coded text only. |
+| **Dark theme, one accent colour** | Maximum contrast over a camera image, low glare outdoors at night, and the accent always means "hazard" or "active". | Light theme; several accent colours. |
+| **Behaviour in `ui.js`, logic in `app.js`, element IDs unchanged** | The redesign couldn't break the tested logic: `app.js` kept all its IDs and its fake-browser tests passed unchanged. If `ui.js` fails, the controls still work. | Rewriting the app around a new UI. |
+| **Segmented control drives a hidden `<select>`** | Four visible buttons are faster than a dropdown on a phone; the select keeps `app.js` unchanged and saves the choice. | Replacing the select in `app.js`. |
+| **Diagnostics hidden behind a switch** | Timing, orientation and blur details were essential for debugging on a phone, but clutter the screen for users. | Always visible; removed. |
+| **Settings saved per phone (`localStorage`)** | No accounts; each phone keeps its own preferences across reloads. | Server-side settings. |
+| **Sensor height as a slider with a live value** | Easy to set once by feel, readable by screen readers through the `<output>`. | A free-text number field. |
 
 ## Checking the layout without a phone
 

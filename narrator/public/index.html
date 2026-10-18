@@ -60,6 +60,10 @@
       </span>
       <span class="quick-label">Voice</span>
     </label>
+    <button id="ask" class="ask" aria-label="Ask a question. Hold and speak, or tap to start and tap again to send." aria-pressed="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
+      <span class="quick-label">Ask</span>
+    </button>
     <button id="start" class="start">Start</button>
     <label class="quick">
       <input id="beeps" type="checkbox" checked>
@@ -126,6 +130,14 @@
         <span><strong>Intensity <output id="beepIntensityOut">1.0×</output></strong><small>Higher starts beeping louder sooner</small></span>
         <input id="beepIntensity" type="range" min="0.5" max="2" step="0.1" value="1" aria-label="Beep intensity">
       </label>
+      <label class="row">
+        <span><strong>Share distance with AI</strong><small>Adds the sensor reading to each frame; never spoken as a number</small></span>
+        <input id="sensorToAi" type="checkbox" class="switch" checked>
+      </label>
+      <label class="row column">
+        <span><strong>Sensor height <output id="sensorHeightOut">1.00 m</output></strong><small>How high the forward sensor is mounted above the ground</small></span>
+        <input id="sensorHeight" type="range" min="0.1" max="2" step="0.05" value="1" aria-label="Sensor height above the ground">
+      </label>
 
       <h3>Diagnostics</h3>
       <button id="debugBtn" type="button" class="row switch-row" aria-pressed="false">
@@ -138,6 +150,7 @@
   <script src="filter.js"></script>
   <script src="speech.js"></script>
   <script src="beeper.js"></script>
+  <script src="recorder.js"></script>
   <script src="app.js"></script>
   <script src="ui.js"></script>
 </body>

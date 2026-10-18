@@ -9,7 +9,7 @@ const path = require('path');
 const http = require('http');
 const https = require('https');
 const { execFileSync } = require('child_process');
-const { buildPayload } = require('./prompt');
+const { buildPayload, buildAskPayload } = require('./prompt');
 const Filter = require('./public/filter.js');
 
 const ROOT = __dirname;
@@ -137,11 +137,13 @@ function readJson(req, limit = 16 * 1024 * 1024) {
 // POST /api/describe  { image, prevImage?, prevDtMs?, said?: string[] }  (images as data URLs)
 // Responds with text/plain: the model's reply (a short alert, or "n/a"). The browser decides
 // whether it is new enough to show. Server-Timing reports how long Perceptron took.
-async function describe(req, res) {
+// POST /api/ask uses the same path with { ask: true }: body { image, audio (base64 WAV), reasoning? },
+// the spoken question answered about the current frame (prompt.js buildAskPayload).
+async function describe(req, res, { ask = false } = {}) {
   let body, payload;
   try {
     body = await readJson(req);
-    payload = buildPayload(body, MODEL);
+    payload = ask ? buildAskPayload(body, MODEL) : buildPayload(body, MODEL);
   } catch (e) {
     return send(res, 400, `Bad request: ${e.message}`);
   }
@@ -183,7 +185,10 @@ async function describe(req, res) {
   const reply = (json.choices?.[0]?.message?.content || '').trim();
   // Same decision the phone will make (public/filter.js); if it will be a new alert, start
   // generating its speech now. The phone's `said` may be newer, so it can still skip it.
-  const alert = Filter.classifyReply(reply, Array.isArray(body.said) ? body.said : []).text;
+  // An answer to a question is always spoken (not repeat-filtered), as the phone sends it.
+  const alert = ask
+    ? Filter.fixStairLabel(Filter.cautiousStairCount(reply.replace(/\s+/g, ' ').trim())) // exactly what the phone will say
+    : Filter.classifyReply(reply, Array.isArray(body.said) ? body.said : []).text;
   if (alert) startEarlySpeech(alert);
   res.writeHead(200, {
     'Content-Type': 'text/plain; charset=utf-8',
@@ -388,6 +393,7 @@ function handler(req, res) {
   if (req.method === 'POST' && req.url.startsWith('/distance')) return postDistance(req, res);
   if (req.method === 'GET' && req.url.startsWith('/api/distance/stream')) return distanceStream(req, res);
   if (req.method === 'POST' && req.url.startsWith('/api/describe')) return describe(req, res);
+  if (req.method === 'POST' && req.url.startsWith('/api/ask')) return describe(req, res, { ask: true });
   if (req.method === 'POST' && req.url.startsWith('/api/speak')) return speak(req, res);
   if (req.method === 'GET' || req.method === 'HEAD') return serveStatic(req, res);
   send(res, 405, 'Method not allowed');

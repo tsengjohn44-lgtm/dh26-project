@@ -11,13 +11,14 @@ There is no phone or headless browser on the development laptop (no Chrome, no f
 
 | Suite (scratch name) | Runs | Checks | Covers |
 |---|---|---|---|
-| `orient_test.cjs` | real `app.js` in a fake browser | 73 | camera reopen races; Stop while opening; 180° turns (events + polling); fullscreen lock/re-lock/unlock; the 🐞 overlay; Android flip correction (preview + AI frames, hysteresis, not on iPhone); pause while speaking (on/off); beeper wiring; blur gate (skip, 100 ms retry, 2 s fallback, gyroscope, spoken hint once per 15 s, not with Voice off); reasoning selector (default, saved, restored, request body); Fast + Low (two requests per frame, ≤2 slow in flight, correction spoken, duplicate suppressed, old view ignored) |
-| `ui_test.cjs` | real `ui.js` in a fake DOM | 13 | sheet open/close (⚙, ✕, backdrop, Escape) and focus; segmented control ↔ select; tap / Enter to repeat; hazard highlight; vibration once per new alert; no vibration support |
+| `orient_test.cjs` | real `app.js` in a fake browser | 107 | camera reopen races; Stop while opening; 180° turns (events + polling); fullscreen lock/re-lock/unlock; the 🐞 overlay; Android flip correction (preview + AI frames, hysteresis, not on iPhone); pause while speaking (on/off); beeper wiring; blur gate (skip, 100 ms retry, 2 s fallback, gyroscope, spoken hint once per 15 s, not with Voice off); reasoning selector (default, saved, restored, request body); Fast + Low (two requests per frame, ≤2 slow in flight, correction spoken, duplicate suppressed, old view ignored); 🎤 Ask (hold, tap, click, too short, mic denied, Stop, auto-send on silence, hold ignores silence, no speech, 405 → restart message); distance sensor in requests (default on, valid reading sent on describe/slow/ask, stale or off → not sent, height saved/restored, overlay line) |
+| `ui_test.cjs` | real `ui.js` in a fake DOM | 16 | sheet open/close (⚙, ✕, backdrop, Escape) and focus; segmented control ↔ select; tap / Enter to repeat; hazard highlight; vibration once per new alert; no vibration support |
 | `queue_test2.cjs` | real `speech.js` with fake fetch streams and a fake Web Audio clock | 12 | audio starts on the first chunk; in-order playback with no overlap or loss; next clip starts as soon as the previous ends; odd byte splits; interrupt; retry; cancel; voice off |
 | `stall_test.cjs` | real `speech.js` | 1 | a hung download is given up and the queue drains |
-| `beeper_test.cjs` | real `beeper.js` | 20 | curve shape and formulas; intensity; beat spacing; immediate speed-up; ducking (not at ≤10 cm); stale/offline; replayed old reading; out of range; toggle; stop; volume |
+| `beeper_test.cjs` | real `beeper.js` | 27 | curve shape and formulas; intensity; beat spacing; immediate speed-up; ducking (not at ≤10 cm); stale/offline; replayed old reading; out of range; toggle; stop; volume; `reading` for the AI (fresh, out of range, beyond 4 m, stale, muted beeps) |
+| `vad_test.cjs` | real `recorder.js` | 11 | end-of-speech detector: sends ~1.2 s after speech, mid-question pauses, no speech at 6 s, clicks, loud background, quiet sounds, trailing-silence trim, the live recorder path |
 | `sse_test.cjs` | real `server.js` over HTTP | 11 | ESP-style POSTs → 204; delivery to the stream < 50 ms; out of range; bad bodies → 400; latest reading on connect; 10 readings in order |
-| filter/prompt checks | `filter.js`, `prompt.js` in Node | ~20 | repeat rules (stairs up vs down, recount, close, room numbers, `refine` directions); stair-count discount; `n/a`; `buildPayload` reasoning levels, caps, brief-thinking instruction |
+| filter/prompt checks | `filter.js`, `prompt.js` in Node | ~40 | repeat rules (stairs up vs down, recount, close, room numbers, `refine` directions); stair-count discount; stair label by direction (9); `n/a`; `buildPayload` reasoning levels, caps, brief-thinking instruction; `cleanSensor` bounds and the sensor paragraph |
 | ESP health scenarios | `server.js` + `curl` | 3 scenarios | Wi-Fi drop vs reboot vs old sketch, as logged |
 
 ## Real-API measurements (method)
@@ -49,6 +50,17 @@ There is no phone or headless browser on the development laptop (no Chrome, no f
 - Listening to speech and beeps; the swipe-to-close gesture; vibration.
 - Phone ↔ laptop network delay (the overlay shows total vs model time).
 - ESP8266 power stability on battery.
+
+## Design decisions
+
+| Decision | Why | Rejected alternative |
+|---|---|---|
+| **Simulated browsers in Node** | No phone or headless browser on the laptop, and no dependencies allowed. Running the real `app.js` against fake camera, audio and DOM objects still catches races (Stop while the camera opens), wiring mistakes and regressions, in seconds. | Playwright/Puppeteer (needs Chrome and npm packages); manual testing only. |
+| **Real APIs for anything about the model or voice** | Prompt wording, latency and speech speed can't be simulated; every such claim in these docs comes from real calls through the real server. | Mocked model replies for prompt work. |
+| **Same-session comparisons, medians, worst case** | Perceptron latency varies between sessions (Low: 1.3 s one day, 2.1 s another); comparing across sessions gave false wins. | Single runs; comparing to old numbers. |
+| **Test both directions of a change** | A fix can cause a new failure elsewhere: the sensor paragraph fixed obstacle detection but mislabelled down-stairs, which only a before/after run on unrelated photos showed. | Testing only the case being fixed. |
+| **Contradiction tests** | A feature that adds context (like the distance reading) must be tested with context that disagrees with the picture, since that is when the model invents things (9/12 before the wording fix). | Testing only consistent inputs. |
+| **Photos from Wikimedia Commons, not committed** | Free to use and quick to fetch; keeping them out of git keeps the repo small. Many are not pedestrian-eye views, so real walks are still needed. | Committing a photo set. |
 
 ## Quick checks before committing
 

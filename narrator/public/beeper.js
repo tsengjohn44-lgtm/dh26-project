@@ -15,6 +15,7 @@
   const LOW_HZ = 650, HIGH_HZ = 1200;
   const PEAK = 0.5;          // oscillator amplitude at full volume: headroom under the voice
   const STALE_MS = 1500;     // no reading for this long: sensor offline, silent
+  const MIN_VALID = 0.02, MAX_VALID = 4; // HC-SR04 range (m); readings outside it aren't sent to the AI
   const LOOKAHEAD = 0.15;    // s of beeps scheduled ahead on the audio clock (steady timing)
   const TICK_MS = 50;
   const DUCK = 0.3;          // beep level while the voice speaks
@@ -49,6 +50,15 @@
     function state() {
       if (!reading || now() - reading.at > STALE_MS) return 'offline';
       return reading.metres === null ? 'clear' : `${reading.metres.toFixed(2)}`;
+    }
+
+    // The latest reading if it is a valid, fresh measurement (for the AI requests), else null.
+    // Out_of_Range arrives as null; outside 2 cm-4 m the HC-SR04 isn't trustworthy.
+    function validReading() {
+      if (!reading || !Number.isFinite(reading.metres)) return null;
+      const ageMs = now() - reading.at;
+      if (ageMs > STALE_MS || reading.metres < MIN_VALID || reading.metres > MAX_VALID) return null;
+      return { metres: reading.metres, ageMs: Math.max(0, Math.round(ageMs)) };
     }
 
     function current() {
@@ -134,6 +144,7 @@
       stop,
       tick,
       get state() { return state(); },
+      get reading() { return validReading(); },
       get enabled() { return enabled; },
       set enabled(v) { enabled = !!v; if (!enabled) mute(); },
       get volume() { return volume; },

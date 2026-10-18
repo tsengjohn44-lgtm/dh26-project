@@ -5,12 +5,18 @@ A zero-dependency Node 18+ server: `node narrator/server.js`. It serves the phon
 ## Endpoints
 
 ### `POST /api/describe`: frame → Perceptron
-- **Request (JSON, ≤16 MiB):** `{ image: "data:image/jpeg;base64,…", said?: string[], reasoning?: "none"|"low"|"high", prevImage?, prevDtMs? }`
+- **Request (JSON, ≤16 MiB):** `{ image: "data:image/jpeg;base64,…", said?: string[], reasoning?: "none"|"low"|"high", style?: "safety"|"classic", sensor?: { distanceM, heightM }, prevImage?, prevDtMs? }`. `sensor` is ignored unless distance is 0.02–4.5 m and height 0–3 m.
 - **What it does:**
   - `prompt.js` `buildPayload()` builds the request; then `POST https://api.perceptron.inc/v1/chat/completions`, non-streaming.
   - If the reply is a new alert by the same filter the phone uses, it starts the speech for it early (see `/api/speak`).
 - **Response:** `200 text/plain` with the model's reply (an alert, or `n/a`). Header `Server-Timing: api;dur=<ms>` gives the Perceptron time.
 - **Errors:** 400 bad input · 429/503 passed through with `Retry-After` · 502 other upstream errors. The upstream request is aborted if the phone disconnects.
+
+### `POST /api/ask`: spoken question + frame → answer
+- **Request (JSON, ≤16 MiB):** `{ image: "data:image/jpeg;base64,…", audio: "<base64 16 kHz mono WAV, no data: prefix>", reasoning?: "none"|"low"|"high", sensor?: { distanceM, heightM } }`. Audio is limited to ~2 MB base64 (the app caps recordings at 15 s).
+- **What it does:** the same path as `/api/describe`, with `buildAskPayload`: one Perceptron request with `image_url` + `input_audio` (`format: 'wav'`) + `ASK_PROMPT`. Speech for the answer starts early (stair counts and stair labels fixed first, matching the phone).
+- **Response:** `200 text/plain` answer (≤2 sentences) with `Server-Timing: api;dur=<ms>`.
+- **Errors:** 400 (missing or non-base64 audio, bad image) · 429/503 · 502, as for describe. See [questions.md](questions.md).
 
 ### `POST /api/speak`: text → audio
 - **Request (JSON):** `{ text }` (≤500 characters).
@@ -67,6 +73,22 @@ The startup log prints the model and voice settings, the desktop URL, the phone 
 - The ESP8266 sketch contains Wi-Fi credentials in plain text: keep the repo private, or move them out of the sketch.
 - Request body limits: 16 MiB for frames, 64 KiB for speech text, 4 KiB for sensor readings.
 - The plain-HTTP ports serve the same routes as HTTPS. Anyone on the same network who knows the address can use the app, and through it spend the keys' credits. Fine for a demo; add authentication before any wider deployment.
+
+## Design decisions
+
+| Decision | Why | Rejected alternative |
+|---|---|---|
+| **Node built-ins only** (`http`, `https`, `fetch`) | Runs anywhere with Node 18+, nothing to install; the server is ~450 lines. | Express or Fastify: no feature here needs them. |
+| **The server is a thin proxy** | It adds the keys, builds the request from one shared module (`prompt.js`), and returns text. All "what to show" logic is on the phone ([architecture.md](architecture.md)). | Server-side filtering and state per phone. |
+| **`prompt.js` shared by the server and the test scripts** | Evaluations send exactly what the app sends, so measurements apply to the real app. | Copying the request into each test. |
+| **`text/plain` replies with `Server-Timing`** | The reply is one short line; `Server-Timing` lets the phone split total time into model time and network time (shown in the 🐞 overlay). | JSON wrappers. |
+| **429/503 passed through with `Retry-After`** | The phone backs off for exactly as long as Perceptron asks. | Retrying on the server, which hides the rate limit. |
+| **Abort the upstream request when the phone disconnects** | Stop, or a newer view, shouldn't keep paying for a reply nobody will see. | Letting it finish. |
+| **Self-signed certificate made at startup** | Phones only allow the camera and mic over HTTPS; this works on any Wi-Fi with no account or domain. Rebuilt only if the `.local` name is missing, not when the IP changes, so the phone doesn't need to accept a new warning every time. | A tunnel service (needs internet and an account); a real certificate (needs a domain). |
+| **`.local` name in the certificate** | The laptop's IP changes between networks; `https://<mac>.local:8443` keeps working. | IP-only access. |
+| **Early speech jobs held in memory, max 2, 15 s** | A job is useful only for the next second or two; the limits cap wasted ElevenLabs requests when the phone skips an alert. | No limit; storing on disk. |
+| **Body size limits** (16 MiB frames, 64 KiB speech, 4 KiB sensor) | Stops accidental or malicious huge requests from exhausting memory. | No limits. |
+| **No authentication (yet)** | A demo on a private network; anyone on the same Wi-Fi who knows the address could use the keys' credits. Add auth before any wider deployment. | Accounts: out of scope for the hackathon. |
 
 ## Perceptron and ElevenLabs facts
 
