@@ -14,7 +14,7 @@ const CONFIGS = [
   { model: 'lite2-f16', delegate: 'GPU', on: true },
   { model: 'lite2', delegate: 'CPU', on: false },
 ];
-const DET_SCORE_MIN = 0.35; // same as detector.js, listed with the results for reference
+const DET_SCORE_MIN = 0.5; // same as detector.js, listed with the results for reference
 // A detector that hasn't loaded by then is reported as failed and the next one runs. On iPhone
 // Safari, Lite2 on GPU stayed at "Loading…" with nothing to show for the runs before it.
 const LOAD_TIMEOUT_MS = 45000;

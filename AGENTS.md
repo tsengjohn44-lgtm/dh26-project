@@ -177,6 +177,12 @@ handleReply():
 | No distances except stair counts | User requirement. Measured adherence: 1 violation in 69 non-stair replies; stairs gave "at least N" 7 of 7 times. |
 | No text-to-speech | Removed at the user's request. (It also lagged badly: about 10 s per utterance against about 1.3 s per description.) |
 | Zero dependencies | Runs anywhere with Node 18+. No build step. |
+| On-device detector is opt-in (`?detector=1`): MediaPipe EfficientDet-Lite0 float16 on GPU, from pinned CDN URLs | iPhone Safari (iOS 26.6.1): 52 ms/frame median, 72 ms p90, about 19 fps. Lite2 float16 on GPU never finished loading there. Laptop (in-app Chromium, Intel Mac): Lite0 f16 GPU 24 ms, Lite2 f16 GPU 41 ms, CPU 57 ms. The int8 models returned no detections at all on GPU, so GPU uses float16. Apache-2.0; still no npm dependency (11.2 MB wasm + 6.9 MB model download only when the flag is on). Falls back to Lite0 int8 on CPU if the GPU model hasn't loaded in 20 s. (2026-10-17) |
+| Detector's people and objects go in the caption after Perceptron's alert, not in a separate line | The prompt reports people only as hazards: two people at a table got `n/a` 6 of 6 times, with or without a hint, while the detector named both ("Person on the left, person ahead."). The user asked for one caption. |
+| Detector hints to Perceptron off by default (`&hints=1`) | `eval/hints.html`, 11 photos, 26 calls per mode: model time 514 ms without vs 541 ms with the hint, and no new counts. A planted wrong hint ("Dog close ahead.") showed up in 2 of 26 replies. |
+| Detector classes exclude "bench"; minimum score 0.5 | In upright (portrait) frames Lite0 called stairs a bench (0.57) and crosswalk stripes a bench (0.88). Other false detections scored 0.39–0.46; real people 0.77–0.87, nearby cars 0.6 and up. |
+| Detector loop on a 15 fps timer, not `requestVideoFrameCallback` | Frame callbacks dropped to about 1.5/s whenever the window wasn't being painted; timers kept running at about 38/s. |
+| Scene change → detector caption in about 0.55 s | 10 trials on the laptop with a fake camera (hallway → cyclist): detector text median 555 ms (489–576) vs Perceptron's alert 716 ms (452–1,237). Most of the 555 ms is the 300 ms hold in `tracker.js` (`STABLE_MS`) plus 2 frames to confirm an object. Not yet measured on a phone. |
 
 ## 8. Testing and verification
 

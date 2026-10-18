@@ -40,12 +40,13 @@ const VIEW_CHANGE = 0.5;
 const THUMB_W = 24, THUMB_H = 18;
 
 // Off unless the page is opened with ?detector=1: an on-device detector (detector.js) runs on
-// the camera frames and keeps a summary such as "2 people ahead, chair on the left" (tracker.js).
-// The summary isn't shown (add &live=1 to see it); a change in it sends a frame to Perceptron
-// right away instead of at the next tick, and &hints=1 also sends it along as a hint.
+// the camera frames and keeps a summary such as "2 people ahead, chair on the left" (tracker.js),
+// shown in the caption after Perceptron's alert. Perceptron's prompt only reports people and
+// objects that are hazards, so on its own it said "n/a" to two people at a table. A change in the
+// summary sends a frame to Perceptron right away; &hints=1 also sends the summary as a hint.
 const params = new URLSearchParams(location.search);
 const DETECTOR = params.get('detector') === '1';
-const SHOW_LIVE = DETECTOR && params.get('live') === '1';
+const SHOW_LIVE = DETECTOR;
 // Sending the summary as a hint is opt-in (&hints=1): on the test photos it didn't make Perceptron
 // give counts (people at a table stayed "n/a"), and a planted wrong hint leaked into 2 of 26 replies.
 const SEND_HINTS = DETECTOR && params.get('hints') === '1';
@@ -158,6 +159,7 @@ function checkViewChange() {
   if (viewThumb) {
     viewId++;
     said = [];
+    tracker?.reset(); // objects from the old view would linger in the caption for ~0.5 s
     setStatus('Live · new view', true);
     // The old alert describes the old view: move it to history right away instead of
     // leaving it up (it would stay if the new view has nothing to report).
@@ -239,7 +241,7 @@ function handleReply(seq, view, reply, totalMs, apiMs) {
   if (!text) {
     // Say why nothing changed: the model saw nothing new, or it repeated an earlier alert.
     setStatus(reason === 'repeat' ? 'Live · already said' : 'Live · nothing new', true);
-    if (!currentEl.dataset.alert) currentEl.textContent = 'Nothing important in view.';
+    if (!currentEl.dataset.alert) showNothing();
     else if (wasError) currentEl.textContent = currentEl.dataset.alert;
     return;
   }
@@ -251,8 +253,13 @@ function handleReply(seq, view, reply, totalMs, apiMs) {
   said = [...said, text].slice(-MAX_SAID);
 }
 
+const NOTHING = 'Nothing important in view.';
+// With the detector on, "nothing important" would contradict its "2 people ahead" right below it,
+// so the placeholder only shows when the detector has nothing either.
+function showNothing() { currentEl.textContent = liveText ? '' : NOTHING; }
+
 // What the person has been told: Perceptron's alerts for this view, plus the detector's line when
-// it is on screen (&live=1), so Perceptron doesn't repeat it. MAX_SAID in total.
+// it is on screen (?detector=1), so Perceptron doesn't repeat it. MAX_SAID in total.
 const saidWithLive = () => (SHOW_LIVE && liveText ? [...said.slice(-(MAX_SAID - 1)), liveText] : said);
 
 function pushHistory(text) {
@@ -346,7 +353,11 @@ function detectorLoop(id) {
 function showLive(text) {
   if (text === liveText) return;
   liveText = text;
-  if (SHOW_LIVE) liveEl.textContent = text;
+  if (SHOW_LIVE) {
+    liveEl.textContent = text;
+    const placeholder = currentEl.textContent === NOTHING || currentEl.textContent === '';
+    if (!currentEl.dataset.alert && !currentEl.classList.contains('error') && placeholder) showNothing();
+  }
   window.dispatchEvent(new CustomEvent('narrator:live', { detail: { text, t: performance.now() } }));
   // Something new in view (or something got close): describe it now rather than at the next tick.
   if (text && running && inFlight.size < MAX_IN_FLIGHT && performance.now() >= pausedUntil) sendFrame(runId);

@@ -16,10 +16,13 @@
     lite2: MODEL_URL('efficientdet_lite2', 'int8'),         // 7.5 MB, CPU only
     'lite2-f16': MODEL_URL('efficientdet_lite2', 'float16'), // 11.6 MB
   };
-  // COCO classes the fast tier reports; everything else is left to Perceptron.
+  // COCO classes the fast tier reports; everything else is left to Perceptron. No "bench": in
+  // upright (portrait) frames Lite0 called stairs a bench (0.57) and crosswalk stripes one (0.88).
   const CLASSES = ['person', 'bicycle', 'car', 'motorcycle', 'bus', 'truck', 'dog',
-    'bench', 'chair', 'fire hydrant', 'potted plant', 'suitcase'];
-  const SCORE_MIN = 0.35; // below this, Lite0 boxes are mostly noise; revisit with real frames
+    'chair', 'fire hydrant', 'potted plant', 'suitcase'];
+  // On the test photos the false detections scored 0.39-0.46 (a "person" and a "hydrant" in a
+  // pothole) and real people 0.77-0.87, nearby cars 0.6 and up. Far, small objects drop out too.
+  const SCORE_MIN = 0.5;
   const MAX_RESULTS = 20;
 
   let vision = null; // { mp, fileset }, shared by every detector created on the page
