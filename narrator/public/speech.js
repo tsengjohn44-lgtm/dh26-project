@@ -39,8 +39,8 @@ window.Speech = (() => {
   }
 
   // A clip fills `chunks` (Float32Array) while it downloads; the player drains them.
-  function makeClip(text) {
-    const clip = { text, chunks: [], rate: 24000, done: false, t0: performance.now(), wake: null, abort: new AbortController() };
+  function makeClip(text, urgent) {
+    const clip = { text, urgent, chunks: [], rate: 24000, done: false, cancelled: false, sources: new Set(), t0: performance.now(), wake: null, abort: new AbortController() };
     clip.notify = () => { const w = clip.wake; clip.wake = null; if (w) w(); };
     download(clip, generation);
     return clip;
@@ -110,16 +110,34 @@ window.Speech = (() => {
     clip.notify();
   }
 
-  // Queue an alert to be spoken.
-  function say(text) {
+  // Queue an alert to be spoken. { urgent: true } (hazard alerts) cuts off a non-urgent clip that
+  // is playing and drops queued non-urgent clips; urgent clips never cut each other and stay in
+  // order. With the Interrupt setting on, every new alert cuts off everything (as before).
+  function say(text, { urgent = false } = {}) {
     if (!enabled || !ctx || !text) return;
     if (interrupt) cancel();
+    else if (urgent) dropNonUrgent();
     stats.lastError = '';
-    const clip = makeClip(text);
+    const clip = makeClip(text, urgent);
     clip.immediate = !queue.length; // nothing ahead of it: its delay is the true speech delay
     queue.push(clip);
     onChange();
     pump();
+  }
+
+  // Stop and remove every non-urgent clip (playing or queued), leaving urgent ones untouched.
+  function dropNonUrgent() {
+    const head = queue[0];
+    for (const clip of queue.filter((c) => !c.urgent)) {
+      clip.cancelled = true;
+      clip.abort.abort();
+      for (const src of clip.sources) { try { src.stop(); } catch { /* not started or already ended */ } sources.delete(src); }
+      clip.sources.clear();
+      queue.splice(queue.indexOf(clip), 1);
+    }
+    // The playback loop is waiting on the cut clip (for audio or for it to end): wake it so it
+    // moves on now. Not when an urgent clip is playing: that wait belongs to it.
+    if (head && head.cancelled && wakePlayback) { const w = wakePlayback; wakePlayback = null; w(); }
   }
 
   // Play queued clips one after another, in order.
@@ -128,9 +146,11 @@ window.Speech = (() => {
     playing = true;
     const gen = generation;
     while (queue.length && gen === generation) {
-      await playClip(queue[0], gen);
+      const clip = queue[0];
+      await playClip(clip, gen);
       if (gen !== generation) return; // cancelled; a newer loop owns playback
-      queue.shift();
+      const i = queue.indexOf(clip);  // may already be gone (cut by an urgent alert)
+      if (i >= 0) queue.splice(i, 1);
       onChange();
     }
     playing = false;
@@ -144,7 +164,7 @@ window.Speech = (() => {
     let next = 0;
     let index = 0;
     for (;;) {
-      if (gen !== generation) return;
+      if (gen !== generation || clip.cancelled) return;
       if (index < clip.chunks.length) {
         const data = clip.chunks[index++];
         const buffer = ctx.createBuffer(1, data.length, clip.rate);
@@ -152,13 +172,14 @@ window.Speech = (() => {
         const src = ctx.createBufferSource();
         src.buffer = buffer;
         src.connect(ctx.destination);
-        src.onended = () => sources.delete(src);
+        src.onended = () => { sources.delete(src); clip.sources.delete(src); };
         if (next < ctx.currentTime) { // first chunk, or the download fell behind playback
           next = ctx.currentTime + START_DELAY;
           if (index === 1 && clip.immediate) { stats.delayMs = Math.round(performance.now() - clip.t0); onChange(); }
         }
         src.start(next);
         sources.add(src);
+        clip.sources.add(src);
         next += buffer.duration;
         continue;
       }
@@ -166,7 +187,7 @@ window.Speech = (() => {
       await wait((resolve) => { clip.wake = resolve; }); // more audio, or the end of the download
     }
     const remaining = next - ctx.currentTime;
-    if (remaining > 0 && gen === generation) await wait((resolve) => setTimeout(resolve, remaining * 1000));
+    if (remaining > 0 && gen === generation && !clip.cancelled) await wait((resolve) => setTimeout(resolve, remaining * 1000));
   }
 
   // Stop the clip that is playing and drop everything queued.

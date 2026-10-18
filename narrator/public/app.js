@@ -291,7 +291,7 @@ async function sendFrame(id, frame) {
   // reasoning, plus a parallel Low-reasoning request for the same frame (sendSlow).
   const hybrid = reasoningSelect.value === 'hybrid';
   const reasoning = hybrid ? 'none' : reasoningSelect.value;
-  const body = { image, said, reasoning };
+  const body = { image, said, reasoning, style: alertStyle() };
   if (hybrid && slowInFlight.size < MAX_SLOW_IN_FLIGHT) sendSlow(id, seq, view, { image, said }, t0);
   // Perceptron rejects clips whose frames differ in size (e.g. after the phone rotates).
   if (MOTION_FRAMES && prevFrame && prevFrame.size === size && t0 - prevFrame.t <= MAX_PREV_FRAME_AGE) {
@@ -360,7 +360,8 @@ function showAlert(text) {
   currentEl.textContent = text;
   currentEl.dataset.alert = text;
   said = [...said, text].slice(-MAX_SAID);
-  Speech.say(text);
+  // Hazard alerts ("Trip hazard: …", "Drop-off: …") cut in ahead of non-hazard speech.
+  Speech.say(text, { urgent: Filter.hazardLabel(text) !== null });
 }
 
 // ---------- "Fast + Low" (hybrid) reasoning ----------
@@ -381,7 +382,7 @@ async function sendSlow(id, seq, view, { image, said: saidThen }, t0) {
     const res = await fetch('/api/describe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image, said: saidThen, reasoning: 'low' }),
+      body: JSON.stringify({ image, said: saidThen, reasoning: 'low', style: alertStyle() }),
       signal: controller.signal,
     });
     if (!res.ok) {
@@ -752,6 +753,13 @@ interruptBox.addEventListener('change', () => {
   Speech.interrupt = interruptBox.checked;
   savePref('interrupt', interruptBox.checked);
 });
+
+// Alert style: Safety labels on (default, "Trip hazard: curb close ahead.") or off (the earlier,
+// "classic" prompt: "Curb close ahead."). Chooses the system prompt in prompt.js. Saved.
+const safetyBox = $('safetyLabels');
+safetyBox.checked = loadPref('safetyLabels', true);
+safetyBox.addEventListener('change', () => savePref('safetyLabels', safetyBox.checked));
+function alertStyle() { return safetyBox.checked ? 'safety' : 'classic'; }
 
 // Perceptron reasoning: Off (fast, default) / Low / High. Saved on the device.
 const reasoningSelect = $('reasoning');

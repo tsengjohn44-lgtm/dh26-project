@@ -2,6 +2,8 @@
 
 Guide for AI coding agents working in this repo. It describes the code as it exists and the plan for what comes next. `CLAUDE.md` only imports this file, so every agent reads the same guide.
 
+**System overviews live in [`docs/`](docs/README.md)**: architecture, vision, speech, proximity sensor, UI, server/API, testing, and [`docs/optimization.md`](docs/optimization.md), every speed and efficiency change with measurements. This file covers conventions, decisions and open questions for agents.
+
 > **Stack note.** An earlier plan for this project used Next.js/TypeScript on Vercel, Grok text-to-speech, and "rough distances" in speech. **That is not what was built**: the code is a zero-dependency Node server plus static HTML/JS in `narrator/`. Speech uses **ElevenLabs** (not Grok). Distances were deliberately removed, except stair counts. Don't start a Next.js migration or switch speech providers without asking the team (see "Decisions").
 
 ---
@@ -61,6 +63,7 @@ node server.js                            # Node >= 18, no npm install
 AGENTS.md            this file: the guide for all AI agents
 CLAUDE.md            one line, "@AGENTS.md", so Claude Code loads this file
 README.md            repo credits (.claude/ agents and skills come from ECC, MIT)
+docs/                system overviews + optimization.md (start at docs/README.md)
 esp8266_main.ino     ESP8266 + ultrasonic sensor: POSTs distance=<m>|Out_of_Range to the server every ~200 ms (own buzzer < 5 cm)
 .claude/             shared agent definitions and skills (code-reviewer, build-error-resolver, …)
 narrator/
@@ -70,8 +73,9 @@ narrator/
   .env               PERCEPTRON_API_KEY (gitignored, never commit)
   certs/             auto-generated self-signed TLS cert (gitignored)
   public/
-    index.html       UI shell: video, status chips, caption, history, Start button, interval slider
-    style.css        dark, high-contrast, phone-first layout (safe-area insets)
+    index.html       UI: status pill, alert card, Voice/Start/Beeps bar, settings sheet, diagnostics overlay
+    style.css        dark, frosted, phone-first design (one amber accent, ≥48 px targets, reduced-motion aware)
+    ui.js            UI behaviour: settings sheet, Reasoning segmented control, tap-to-repeat, hazard highlight
     app.js           camera, frame capture, request scheduler, view-change detection, UI updates
     filter.js        shared by browser and Node: n/a and repeat filtering, viewChange()
     speech.js        ElevenLabs speech: audio queue, prefetch, interrupt, Web Audio playback (window.Speech)
@@ -139,10 +143,10 @@ handleReply():
 ### `narrator/prompt.js`
 - `SYSTEM_PROMPT` is the single source of truth for model behavior. Sections: role, report priorities, "Be certain" (the door rule), style, the "Already said" rule, `n/a`, and examples.
 - `buildPayload(body, model)`:
-  - `body = { image, said?, prevImage?, prevDtMs? }`.
+  - `body = { image, said?, reasoning?, style?, prevImage?, prevDtMs? }`; `style: 'classic'` uses `CLASSIC_PROMPT`, otherwise the safety prompt.
   - It sends one `image_url`, or a 2-frame `video_frames` clip when `prevImage` is given; clip mode is currently unused, see `MOTION_FRAMES`.
   - The user text lists "Already said (oldest first)".
-  - Settings: `stream: false`, `reasoning_effort: 'none'`, `temperature: 0.2`, `max_completion_tokens: 40`.
+  - Settings: `stream: false`, `temperature: 0.2`. `reasoning_effort` comes from `body.reasoning` (`none` by default, or `low`/`high`), with `max_completion_tokens` 40 for none and 2048 (`REASONING_BUDGET`) with reasoning. Low also gets the "think briefly" instruction (`BRIEF_REASONING`). The app's Fast + Low mode sends `none` and `low` requests for the same frame.
 - The prompt examples are copied almost word for word by the model. Keep them generic. An example once said "Curb close ahead, crosswalk beyond it", and the model then added "crosswalk beyond it" to a photo with no crosswalk.
 
 ### `narrator/public/filter.js` (UMD: `window.Filter` in the browser, `require()` in Node)
@@ -205,6 +209,28 @@ handleReply():
 - Shares `Speech.context`, the `AudioContext` unlocked in the Start tap.
 - **UI:** Beeps row in the footer: the `#beeps` toggle, `#beepVolume` 0–100 (default 60) and `#beepIntensity` 0.5–2 (default 1). They're saved in `localStorage` keys `beeps`, `beepVolume` and `beepIntensity`. The `#distance` header chip shows "obstacle 0.42 m", "sensor: clear" or "sensor offline".
 - **Tests (simulated):** curve and scheduler, 20 checks with a fake audio clock and stream. Server stream, 11 checks with real HTTP. App wiring, 5 checks in the fake browser.
+
+### UI (`index.html`, `style.css`, `ui.js`): redesigned 2026-10-18
+- **Main screen:**
+  - a status pill: `#status` with a red pulsing dot when live, plus the `#distance` badge
+  - ⚙ `#settingsBtn` and ⇄ `#flip`
+  - the alert card `#current` (28–32 px; amber left edge when `.hazard`)
+  - the last two `#history` lines (the rest hidden by CSS)
+  - a bottom bar: Voice quick toggle `#voice`, Start/Stop `#start`, Beeps quick toggle `#beeps`
+- **Settings sheet** (`#sheet`): one scrolling list, no sub-menus.
+  - Speech: `#interrupt`, `#pauseSpeaking`
+  - Vision: Reasoning as a 4-button segmented control that drives the hidden `<select id="reasoning">`; `#interval`
+  - Proximity: `#beepVolume`, `#beepIntensity`
+  - Diagnostics: `#debugBtn` as a switch row (`aria-pressed`)
+  - The timing chips `#latency`, `#lens` and `#voiceStatus` moved into the diagnostics overlay.
+- **All element IDs used by `app.js` were kept**, so `app.js` didn't change for the redesign, and its 73 fake-browser checks pass unchanged.
+- **`ui.js`** (loaded after `app.js`; if it fails, the controls still work as plain form controls):
+  - Sheet: open/close via ⚙, ✕, backdrop, Escape, or a swipe down on the handle/header; `aria-expanded` and focus are handled.
+  - Segmented control: sets `#reasoning` and dispatches `change`, so `app.js` saves it.
+  - Tap or Enter on the alert card: `Speech.say(current alert)`.
+  - A `MutationObserver` on `data-alert`: `.hazard` for stairs, curb, drop, hole, close, car, bike or approaching; a 40 ms vibration on Android; an arrival animation.
+  - Tests: 13 fake-DOM checks.
+- **Visual check:** rendered with macOS Quick Look (`qlmanage -t`, WebKit) at 360 and 412 px in iframes. Animations had to be disabled in the preview, because Quick Look snapshots frame 0. Found and fixed: the sheet was slightly see-through, so it's now opaque with `z-index: 20`.
 
 ### `narrator/public/app.js`
 - **Camera:** `openCamera()` requests 1920×1440 at 4:3. On most phones that uses the full sensor; 16:9 crops it. Then `useWidestLens()`:
@@ -278,6 +304,14 @@ handleReply():
 | Stair count × 0.75 in code (`STAIR_COUNT_FACTOR`) | User wants underestimates. The model overcounts short flights consistently (5 for 2 gate steps, 10 for 8) and prompt wording didn't fix it. Overestimates went from 12/36 to 4/36; the remaining ones are on a 2-step flight. Long flights are already undercounted (15 for ~25). |
 | Focus on center and foreground | User requirement. Old vs new prompt on 12 photos: dropped edge and distant details (a bike-lane sign at the edge, people far down a concourse, a building under construction behind a fence). Signs, doors and stairs straight ahead are still reported. |
 | ElevenLabs `eleven_v4_turbo` for speech | The user asked for maximum realism and generation speed, with unlimited credits. Per ElevenLabs' model docs (Oct 2026), v4 Turbo is their most realistic real-time model at about 100 ms median inference. Flash v2.5 is about 75 ms but lower quality; Eleven v4 is the highest quality but not real-time. The earlier browser `speechSynthesis` version was removed because it lagged about 10 s behind. |
+| **Safety-first prompt with hazard labels** (`prompt.js`): `Trip hazard:` · `Drop-off:` · `Head hazard:` · `Moving hazard:` · `Obstacle:`; no label for doors, signs or crosswalks | User request.
+  - **Measured, old vs new prompt** (19 photos × 2 runs): hazard photos labelled 0/18 → 18/18; correct label overall 16/34 → 29/34; 0 replies over 12 words; median 609 → 639 ms.
+  - **First version failed on stairs:** with only a stairs-down template, a stairs-up photo became "Drop-off: stairs going down". Fixed with one template per direction plus "direction decides the label": stairs up 5/6 and down 4/4 afterwards.
+  - Examples are templates (`<object>, <where>`), because concrete examples get copied.
+  - Regression: an aerial crosswalk photo and distant cyclists became `n/a`. |
+| **Switchable prompt style** (`#safetyLabels`, `body.style`, `CLASSIC_PROMPT` in `prompt.js`) | User request: be able to go back to the pre-label responses. `CLASSIC_PROMPT` is the earlier prompt kept verbatim (checked equal to the saved copy). Default is safety. Fast + Low reasoning requests use the same style. |
+| **Safety escalation + label-aware repeats** (`filter.js` `hazardLabel`, `isRepeat`) | Labels are stripped before comparing words; otherwise every "Trip hazard: …" shares "trip hazard" and different hazards look like repeats. A reply with a label the matching earlier alert lacked is new, for fast and Fast + Low replies ("Curb ahead" → "Trip hazard: curb close ahead"). Alerts that are all label and filler repeat only an equally bare alert with the same label; without this rule, "Trip hazard: step ahead." would be spoken every frame. 21 unit checks. |
+| **Hazard speech priority** (`Speech.say(text, { urgent })`) | User request. A labelled alert stops a playing non-hazard clip and drops queued non-hazard clips; hazards never cut hazards. Uses per-clip cancellation (`dropNonUrgent`); the playback loop removes the clip it played by identity, since cut clips leave the queue. 8 checks with fake audio; the Interrupt setting still cuts everything. |
 | **"Think briefly" for Low** (`BRIEF_REASONING` in `prompt.js`, added to the system prompt only when `reasoning === 'low'`) | Reasoning time comes from thinking tokens. Measured on 4 photos × 2 runs in one session:
   - Low as before: 2.1 s median, 6.9 s worst, ~330 tokens.
   - With the instruction: 1.35 s median, 3.0 s worst, ~170 tokens. Answers stayed correct (sign arrow still "right").
@@ -376,5 +410,5 @@ If you add a proper harness, put it in `narrator/eval/` and keep images out of g
 ## 12. Open questions for the team
 
 - Is the earlier Next.js/Vercel plan dropped for good, or is a migration of `narrator/` still wanted?
-- Speech in queue mode can fall behind during busy stretches. Should hazards automatically interrupt, and should a hazard jump ahead of queued text such as signs?
+- Speech in queue mode can fall behind during busy stretches. (Hazards now cut in ahead of other speech. Is that enough, or should the queue also be capped?)
 - Where will this be deployed for the demo? Hosting needs real HTTPS plus the API key kept server-side.

@@ -8,10 +8,22 @@
   // Words that don't distinguish one alert from another.
   const FILLER = new Set(['the', 'and', 'with', 'from', 'are', 'its', 'there', 'ahead', 'sign', 'reads', 'about',
     'at', 'least', 'on', 'in', 'to', 'of', 'is', 'an', 'a', 'it', 'close', 'step', 'steps']);
+  // Hazard labels the prompt puts at the start of safety alerts ("Trip hazard: curb close ahead.").
+  const LABEL_RE = /^\s*(trip\s*hazard|drop[\s-]*off|head\s*hazard|moving\s*hazard|obstacle)\b\s*:?\s*/i;
+  const LABELS = { triphazard: 'trip', dropoff: 'drop', headhazard: 'head', movinghazard: 'moving', obstacle: 'obstacle' };
+  // 'trip' | 'drop' | 'head' | 'moving' | 'obstacle', or null for a non-hazard alert.
+  function hazardLabel(text) {
+    const m = String(text).match(LABEL_RE);
+    return m ? LABELS[m[1].toLowerCase().replace(/[\s-]/g, '')] : null;
+  }
+
   // Numbers count (room 214 vs 215 are different), but stair counts don't ("at least 6 steps"
   // vs "at least 8 steps" is the same staircase). "up"/"down" are kept: they matter for stairs.
+  // The hazard label is left out: otherwise two different hazards ("Trip hazard: curb" vs
+  // "Trip hazard: step") would share "trip hazard" and look like a repeat. Labels are compared
+  // separately in isRepeat.
   const contentWords = (text) => new Set(
-    text.toLowerCase().replace(/\d+\s*steps?/g, ' ').match(/[a-z0-9]+/g)
+    text.replace(LABEL_RE, '').toLowerCase().replace(/\d+\s*steps?/g, ' ').match(/[a-z0-9]+/g)
       ?.filter((w) => !FILLER.has(w) && (w.length > 1 || /\d/.test(w))) || [],
   );
   const isClose = (text) => /\bclose\b/i.test(text);
@@ -22,11 +34,17 @@
   const DIRECTIONS = new Set(['left', 'right', 'up', 'down']);
 
   // A reply restates an earlier alert when most of its content words were already in it,
-  // unless it adds a new number (e.g. a room number) or the hazard has now become "close".
+  // unless it adds a new number (e.g. a room number), the hazard has now become "close", or it
+  // carries a safety label the earlier alert lacked (safety escalation: "Curb ahead" then
+  // "Trip hazard: curb close ahead" is spoken; the same labelled hazard again is not).
   function isRepeat(text, earlier, { refine = false } = {}) {
     const words = contentWords(text);
-    if (!words.size) return false;
+    const label = hazardLabel(text);
+    // Nothing left to compare (e.g. "Trip hazard: step ahead." is all label and filler): a
+    // repeat of an earlier alert that is just as bare with the same label, otherwise new.
+    if (!words.size) return earlier.some((old) => hazardLabel(old) === label && !contentWords(old).size);
     return earlier.some((old) => {
+      if (label && hazardLabel(old) !== label) return false;
       const oldWords = contentWords(old);
       if ([...words].some((w) => /\d/.test(w) && !oldWords.has(w))) return false;
       if (refine && [...words].some((w) => DIRECTIONS.has(w) && !oldWords.has(w))) return false;
@@ -100,7 +118,7 @@
     return ((sumSq / n - mean * mean) / (level * level)) * 1000;
   }
 
-  const api = { isNothing, isRepeat, classifyReply, finalizeReply, viewChange, cautiousStairCount, sharpness };
+  const api = { isNothing, isRepeat, classifyReply, finalizeReply, viewChange, cautiousStairCount, sharpness, hazardLabel };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.Filter = api;
 })(this);
