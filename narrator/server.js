@@ -189,7 +189,9 @@ async function describe(req, res) {
   // Same decision the phone will make (public/filter.js); if it will be a new alert, start
   // generating its speech now. The phone's `said` may be newer, so it can still skip it.
   const alert = Filter.classifyReply(reply, Array.isArray(body.said) ? body.said : []).text;
-  if (alert) startEarlySpeech(alert);
+  // Not for a phone with Voice off (body.voice false): it would never ask for this audio, and
+  // each early generation costs ElevenLabs credits. Older pages don't send the field: still early.
+  if (alert && body.voice !== false) startEarlySpeech(alert);
   res.writeHead(200, {
     'Content-Type': 'text/plain; charset=utf-8',
     'Cache-Control': 'no-store',

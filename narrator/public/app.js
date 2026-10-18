@@ -304,7 +304,9 @@ async function sendFrame(id, frame) {
   // reasoning, plus a parallel Low-reasoning request for the same frame (sendSlow).
   const hybrid = reasoningSelect.value === 'hybrid';
   const reasoning = hybrid ? 'none' : reasoningSelect.value;
-  const body = { image, said, reasoning, style: alertStyle() };
+  // voice: the server only starts generating speech early (server.js startEarlySpeech) for a
+  // phone that will play it; with Voice off it was spending ElevenLabs credits on every alert.
+  const body = { image, said, reasoning, style: alertStyle(), voice: Speech.enabled };
   if (hybrid && slowInFlight.size < MAX_SLOW_IN_FLIGHT) sendSlow(id, seq, view, { image, said }, t0);
   // Perceptron rejects clips whose frames differ in size (e.g. after the phone rotates).
   if (MOTION_FRAMES && prevFrame && prevFrame.size === size && t0 - prevFrame.t <= MAX_PREV_FRAME_AGE) {
@@ -397,7 +399,7 @@ async function sendSlow(id, seq, view, { image, said: saidThen }, t0) {
     const res = await fetch('/api/describe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image, said: saidThen, reasoning: 'low', style: alertStyle() }),
+      body: JSON.stringify({ image, said: saidThen, reasoning: 'low', style: alertStyle(), voice: Speech.enabled }),
       signal: controller.signal,
     });
     if (!res.ok) {
@@ -457,8 +459,15 @@ async function loop(id) {
 
 // ---------- controls ----------
 
+let statusText = 'Idle', statusLive = false;
 function setStatus(text, live) {
-  statusEl.textContent = text;
+  statusText = text;
+  statusLive = live;
+  // iOS paused the audio (app switch, screen lock) and only a tap can resume it. Said here, in
+  // the status pill that is seen and read out, not only in the diagnostics voice chip. Short and
+  // on its own: next to the "sensor offline" badge a 375 px phone leaves the text ~130 px, which
+  // cut "Live · … · tap for sound" down to "L…".
+  statusEl.textContent = running && Speech.soundPaused ? 'Tap for sound' : text;
   statusEl.classList.toggle('live', !!live);
 }
 
@@ -900,6 +909,7 @@ function post(record) {
 }
 
 function renderVoice() {
+  setStatus(statusText, statusLive); // adds or clears "tap for sound"
   const { delayMs, lastError } = Speech.stats;
   if (!Speech.enabled) {
     if (lastError && voiceBox.checked) voiceBox.checked = false; // server has no ElevenLabs key

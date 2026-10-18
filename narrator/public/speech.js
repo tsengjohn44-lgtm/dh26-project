@@ -28,15 +28,59 @@ window.Speech = (() => {
   let onChange = () => {};
   const stats = { delayMs: 0, lastError: '' };
 
+  // iOS mutes Web Audio while the ring/silent switch is set to silent (a video still plays), so
+  // with the switch on silent the voice and beeps were inaudible. The "playback" audio session
+  // (Safari 17+) makes the page play like a video. Older iOS: playing a silent looping <audio>
+  // element from a tap moves the page into the same playback session.
+  const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  let keepAlive = null;
+  function usePlaybackSession() {
+    if (navigator.audioSession) {
+      try { navigator.audioSession.type = 'playback'; } catch { /* unsupported value */ }
+      return;
+    }
+    if (!IS_IOS) return; // elsewhere Web Audio already follows the media volume
+    if (!keepAlive) {
+      keepAlive = new Audio(silentWavUrl());
+      keepAlive.loop = true;
+      keepAlive.setAttribute('playsinline', '');
+    }
+    keepAlive.play().catch(() => {});
+  }
+
+  function silentWavUrl() {
+    const samples = 2205; // 0.1 s at 22050 Hz
+    const buf = new ArrayBuffer(44 + samples * 2);
+    const v = new DataView(buf);
+    const str = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+    str(0, 'RIFF'); v.setUint32(4, 36 + samples * 2, true); str(8, 'WAVEfmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, 22050, true); v.setUint32(28, 44100, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    str(36, 'data'); v.setUint32(40, samples * 2, true);
+    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  }
+
   // Must run inside a user gesture (the Start tap) for iOS to allow audio.
   function unlock() {
-    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+    usePlaybackSession();
+    if (!ctx) {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      ctx.onstatechange = () => { if (ctx.state === 'running' && stats.lastError === PAUSED) { stats.lastError = ''; onChange(); } };
+    }
     if (ctx.state !== 'running') ctx.resume().catch(() => {});
     const blip = ctx.createBufferSource(); // one silent sample: completes the iOS unlock
     blip.buffer = ctx.createBuffer(1, 1, 22050);
     blip.connect(ctx.destination);
     blip.start();
   }
+
+  // iOS suspends audio when the page is hidden or another app takes the speaker, and only a tap
+  // may turn it back on. The app restarts itself when the page comes back, without a tap, so the
+  // voice stayed silent: the next tap anywhere on the page now resumes it.
+  const PAUSED = 'tap the screen to turn sound back on';
+  const resumeOnTap = () => { if (ctx && ctx.state !== 'running') unlock(); };
+  document.addEventListener('touchend', resumeOnTap, { capture: true, passive: true });
+  document.addEventListener('click', resumeOnTap, { capture: true });
 
   // A clip fills `chunks` (Float32Array) while it downloads; the player drains them.
   function makeClip(text, urgent) {
@@ -118,6 +162,10 @@ window.Speech = (() => {
     if (interrupt) cancel();
     else if (urgent) dropNonUrgent();
     stats.lastError = '';
+    if (ctx.state !== 'running') { // suspended or interrupted: queue it, and say how to get sound
+      ctx.resume().catch(() => {});
+      stats.lastError = PAUSED;
+    }
     const clip = makeClip(text, urgent);
     clip.immediate = !queue.length; // nothing ahead of it: its delay is the true speech delay
     queue.push(clip);
@@ -208,6 +256,7 @@ window.Speech = (() => {
     cancel,
     stats,
     get pending() { return queue.length; },
+    get soundPaused() { return enabled && !!ctx && ctx.state !== 'running'; }, // a tap resumes it
     get context() { return ctx; }, // the AudioContext unlocked by the Start tap (shared with beeper.js)
     get enabled() { return enabled; },
     set enabled(v) { enabled = v; if (!v) cancel(); },

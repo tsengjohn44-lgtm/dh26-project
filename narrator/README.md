@@ -39,6 +39,11 @@ Details of each setting:
 
 - **Start / Stop**: opens the rear camera and begins narrating. The app uses the widest view it can get: the ultra-wide lens when the browser offers it (iOS Safari lists it as "Back Ultra Wide Camera"), otherwise the lowest zoom, at 4:3 so the full sensor is used. The top bar shows which camera is in use.
 - **Voice**: speaks each new alert with ElevenLabs (`eleven_v4_turbo`). Audio is streamed, and the server starts generating it as soon as Perceptron replies, before the alert reaches the phone. A `[rapidly]` delivery instruction makes speech about 27% faster than plain. While an alert is being spoken, no new images are sent to Perceptron. By default alerts are queued and spoken in order, with none skipped. The top bar shows how quickly speech started and how many clips are waiting. Requires `ELEVENLABS_API_KEY`; set `ELEVENLABS_VOICE_ID` to use a different voice. For even faster but less natural speech, set `ELEVENLABS_MODEL=eleven_flash_v2_5`; it speaks at `ELEVENLABS_SPEED`, default 1.2.
+- **No sound?**
+  - **iPhone silent switch:** the app now plays through it (Safari's playback audio session).
+  - **After switching apps or locking the screen:** iOS pauses the sound and only a tap can turn it back on. The status pill then says **Tap for sound**; tap anywhere.
+  - **Still silent:** turn up the media volume, and check **Voice** is on in the bottom bar.
+  - **Voice off:** the server doesn't generate speech for a phone with Voice off, which saves ElevenLabs credits.
 - **Phones** go fullscreen and lock to portrait on Start. This stops the screen from turning over when you tilt the phone, which made the camera image upside down on Android.
 - **Reasoning** (Off / Fast + Low / Low / High): **Fast + Low** gives the normal fast alert, then a reasoning check about a second later that speaks only if it adds or corrects something (e.g. a sign's arrow direction). Otherwise: lets Perceptron think before answering. Low reads details more accurately (e.g. a sign's arrow direction) but takes about 1.3 s per frame instead of 0.5 s; High is the most thorough, at about 5 s. Off is best for walking.
 - **Safety labels** (Settings → Vision, on by default): turn off to get the earlier plain style ("Curb close ahead.") instead of "Trip hazard: curb close ahead."
