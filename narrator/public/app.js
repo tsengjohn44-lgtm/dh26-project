@@ -15,6 +15,7 @@ const lensEl = $('lens');
 const voiceEl = $('voiceStatus');
 const voiceBox = $('voice');
 const interruptBox = $('interrupt');
+const askBtn = $('ask');
 const currentEl = $('current');
 const historyEl = $('history');
 const startBtn = $('start');
@@ -304,10 +305,11 @@ async function sendFrame(id, frame) {
   // reasoning, plus a parallel Low-reasoning request for the same frame (sendSlow).
   const hybrid = reasoningSelect.value === 'hybrid';
   const reasoning = hybrid ? 'none' : reasoningSelect.value;
+  const sensor = sensorContext(); // taken once, so the fast and slow requests for a frame agree
   // voice: the server only starts generating speech early (server.js startEarlySpeech) for a
   // phone that will play it; with Voice off it was spending ElevenLabs credits on every alert.
-  const body = { image, said, reasoning, style: alertStyle(), voice: Speech.enabled };
-  if (hybrid && slowInFlight.size < MAX_SLOW_IN_FLIGHT) sendSlow(id, seq, view, { image, said }, t0);
+  const body = { image, said, reasoning, style: alertStyle(), sensor, voice: Speech.enabled };
+  if (hybrid && slowInFlight.size < MAX_SLOW_IN_FLIGHT) sendSlow(id, seq, view, { image, said, sensor }, t0);
   // Perceptron rejects clips whose frames differ in size (e.g. after the phone rotates).
   if (MOTION_FRAMES && prevFrame && prevFrame.size === size && t0 - prevFrame.t <= MAX_PREV_FRAME_AGE) {
     body.prevImage = prevFrame.image;
@@ -381,6 +383,146 @@ function showAlert(text, source = 'fast') {
   logAlert(text, source);
 }
 
+// ---------- spoken questions (🎤 Ask) ----------
+// Tap the Ask button once and speak: the question is sent when you stop talking (about 1.2 s of
+// silence; see recorder.js). Tapping again sends at once. Holding works too: while the button is
+// held, pauses don't send and releasing does. If no speech is heard within 6 s, the ask ends
+// with nothing sent. Screen readers' double-tap and Enter act as taps. The current frame and the WAV go to
+// POST /api/ask; the answer is shown and spoken first (urgent). While asking, narration pauses,
+// speech stops and beeps are muted so the mic doesn't hear them.
+const HOLD_MS = 400; // pressed longer than this = hold-to-talk; shorter = tap-to-toggle
+let asking = false;  // from the start of recording until the answer is shown
+let pressAt = 0;
+
+function cue(freq) { // short tone so a blind user knows the mic opened / closed
+  const ac = Speech.context;
+  if (!ac) return;
+  const osc = ac.createOscillator(), env = ac.createGain();
+  osc.frequency.value = freq;
+  env.gain.setValueAtTime(0.0001, ac.currentTime);
+  env.gain.exponentialRampToValueAtTime(0.25, ac.currentTime + 0.01);
+  env.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + 0.12);
+  osc.connect(env); env.connect(ac.destination);
+  osc.start(); osc.stop(ac.currentTime + 0.13);
+  if (navigator.vibrate) navigator.vibrate(30);
+}
+
+async function startAsk() {
+  if (asking) return;
+  if (!running) { setStatus('Tap Start first, then ask', false); return; }
+  Speech.unlock();
+  asking = true;
+  Speech.cancel();
+  Beeper.enabled = false;
+  askBtn.classList.add('listening');
+  askBtn.setAttribute('aria-pressed', 'true');
+  // Tone before the mic opens: once it is open, Android turns playback down and the tone is
+  // inaudible (on the phone only the vibration was noticed).
+  cue(880);
+  Speech.setRecording(true); // iPhone: the playback session doesn't allow the microphone
+  try {
+    await Recorder.start(Speech.context, {
+      onLimit: () => finishRecording(),
+      onSilence: () => { if (!pressStarted) finishRecording(); }, // held: releasing sends instead
+      onNoSpeech: () => { if (!pressStarted) noQuestion(); },
+    });
+  } catch (e) {
+    endAsk();
+    setStatus('Microphone unavailable', false);
+    currentEl.textContent = `Microphone error: ${e.message}`;
+    return;
+  }
+  setStatus('Listening… ask your question', true);
+}
+
+function noQuestion() {
+  if (!asking || !Recorder.recording) return;
+  cue(440);
+  endAsk();
+  setStatus("Didn't hear a question", true);
+}
+
+async function finishRecording() {
+  if (!asking || !Recorder.recording) return;
+  const rec = Recorder.stop();
+  Speech.setRecording(false); // mic released: back to playback, so the answer plays loudly
+  cue(660);
+  askBtn.classList.remove('listening');
+  askBtn.setAttribute('aria-pressed', 'false');
+  if (!rec) { endAsk(); setStatus('Too short: tap Ask, then speak', true); return; }
+  const image = grabFrame();
+  if (!image) { endAsk(); setStatus('Camera not ready', false); return; }
+  setStatus('Thinking…', true);
+  const t0 = performance.now();
+  try {
+    const level = reasoningSelect.value === 'hybrid' ? 'none' : reasoningSelect.value;
+    const res = await fetch('/api/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image, audio: rec.audio, reasoning: level, sensor: sensorContext(), voice: Speech.enabled }),
+    });
+    // The server doesn't know /api/ask: it is still running code from before this feature.
+    if (res.status === 404 || res.status === 405) throw new Error('Server is out of date: restart node server.js');
+    if (!res.ok) throw new Error(await res.text());
+    // Same cautious stair count as alerts (×0.75, rounded down): the model overcounts.
+    const answer = Filter.fixStairLabel(Filter.cautiousStairCount((await res.text()).replace(/\s+/g, ' ').trim()));
+    latencyEl.textContent = `answer ${Math.round(performance.now() - t0)} ms`;
+    if (answer) showAnswer(answer);
+    setStatus('Live', true);
+  } catch (e) {
+    setStatus('Could not answer', false);
+    currentEl.textContent = e.message || String(e);
+  } finally {
+    endAsk();
+  }
+}
+
+// An answer is always shown and spoken (never repeat-filtered), ahead of other speech, and is not
+// added to `said`, so the narration's repeat filtering isn't affected.
+function showAnswer(text) {
+  const shown = currentEl.dataset.alert;
+  if (shown) pushHistory(shown);
+  currentEl.textContent = text;
+  currentEl.dataset.alert = text; // tap the card to hear it again
+  Speech.say(text, { urgent: true });
+}
+
+function endAsk() {
+  if (Recorder.recording) Recorder.cancel();
+  Speech.setRecording(false); // every way out of an ask (no speech, error, done) restores playback
+  asking = false;
+  askBtn.classList.remove('listening');
+  askBtn.setAttribute('aria-pressed', 'false');
+  Beeper.enabled = beepsBox.checked;
+}
+
+// Press handling (on top of the automatic send when the user stops talking):
+//   press ... release after >= HOLD_MS  -> send (hold-to-talk)
+//   quick tap                            -> keeps recording; sent on silence or the next tap
+//   click with no press just before it   -> toggle (keyboard, some screen readers)
+let pressStarted = false;  // this press opened the mic (true while it is held)
+let pressStops = false;    // this press is the second tap of toggle mode
+let lastPointerAt = 0;
+askBtn.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  lastPointerAt = pressAt = performance.now();
+  pressStarted = pressStops = false;
+  if (!asking) { pressStarted = true; startAsk(); }
+  else if (Recorder.recording) pressStops = true;
+});
+askBtn.addEventListener('pointerup', () => {
+  lastPointerAt = performance.now();
+  if (pressStops) { pressStops = false; finishRecording(); return; }
+  if (pressStarted && performance.now() - pressAt >= HOLD_MS) finishRecording(); // held: send
+  pressStarted = false;
+});
+askBtn.addEventListener('pointercancel', () => { pressStarted = pressStops = false; if (asking && Recorder.recording) finishRecording(); });
+askBtn.addEventListener('click', () => {
+  if (performance.now() - lastPointerAt < 800) return; // already handled by the pointer events
+  if (asking && Recorder.recording) finishRecording();
+  else if (!asking) startAsk();
+});
+
 // ---------- "Fast + Low" (hybrid) reasoning ----------
 // The Low-reasoning reply for a frame arrives ~1 s after the fast one and only adds or corrects
 // (e.g. "arrow right" where the fast reply said "arrow left"). It has its own ordering: newer
@@ -391,7 +533,7 @@ const slowInFlight = new Set();
 let shownSlowSeq = 0;
 const slowStats = { ms: 0, spoken: 0, suppressed: 0, stale: 0 };
 
-async function sendSlow(id, seq, view, { image, said: saidThen }, t0) {
+async function sendSlow(id, seq, view, { image, said: saidThen, sensor }, t0) {
   const controller = new AbortController();
   slowInFlight.add(controller);
   const timer = setTimeout(() => controller.abort(new Error('Request timed out')), REASONING_TIMEOUT_MS);
@@ -399,7 +541,7 @@ async function sendSlow(id, seq, view, { image, said: saidThen }, t0) {
     const res = await fetch('/api/describe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image, said: saidThen, reasoning: 'low', style: alertStyle(), voice: Speech.enabled }),
+      body: JSON.stringify({ image, said: saidThen, reasoning: 'low', style: alertStyle(), sensor, voice: Speech.enabled }),
       signal: controller.signal,
     });
     if (!res.ok) {
@@ -446,6 +588,7 @@ const speaking = () => pauseWhileSpeaking && Speech.enabled && Speech.pending > 
 
 async function loop(id) {
   while (running && id === runId) {
+    if (asking) { await sleep(100); continue; } // a spoken question is being recorded or answered
     if (speaking()) {
       if (!statusEl.textContent.includes('speaking')) setStatus('Live · paused while speaking', true);
     } else if (inFlight.size < MAX_IN_FLIGHT && performance.now() >= pausedUntil) {
@@ -590,6 +733,7 @@ function renderDiag() {
     `fullscreen ${document.fullscreenElement ? 'on' : 'off'} · lock ${diag.lock}`,
     `camera frame rotation ${diag.frame || '-'}`,
     ...(reasoningSelect.value === 'hybrid' ? [`fast + low: last low reply ${slowStats.ms} ms · spoken ${slowStats.spoken} · suppressed ${slowStats.suppressed} · too late ${slowStats.stale} · in flight ${slowInFlight.size}`] : []),
+    `sensor→AI: ${sensorDiag()}`,
     `blur: ${blurStats.verdict} · sharpness ${blurStats.score.toFixed(1)} (blurry below ${blurStats.threshold ? blurStats.threshold.toFixed(1) : '-'}) · skipped ${blurStats.skipped} · turning ${Math.round(turnRate)}°/s`,
     `flip correction ${FLIP_CORRECTION ? (frameTurn ? 'ON (turning image 180°)' : 'off (image upright)') : 'disabled (not Android)'}`,
     `video ${video.videoWidth}×${video.videoHeight} · track ${s.width ?? '-'}×${s.height ?? '-'} ${s.facingMode ?? ''}`,
@@ -740,6 +884,7 @@ function stop() {
   endDataSession(); // before resetView/stopCamera: its stop record reports this session
   running = false;
   runId++;
+  if (asking) endAsk(); // also releases the microphone
   resetView();
   for (const c of inFlight) c.abort();
   inFlight.clear();
@@ -946,6 +1091,30 @@ beepsBox.addEventListener('change', () => { Speech.unlock(); savePref('beeps', b
 beepVolumeInput.addEventListener('input', () => { saveNumber('beepVolume', beepVolumeInput.value); applyBeepSettings(); });
 beepIntensityInput.addEventListener('input', () => { saveNumber('beepIntensity', beepIntensityInput.value); applyBeepSettings(); });
 applyBeepSettings();
+
+// ---------- distance reading in the AI requests ----------
+// With "Share distance with AI" on, each request carries the sensor's latest valid reading and its
+// mounting height (prompt.js turns them into one paragraph; alerts never say the number). Nothing
+// is sent when the sensor is offline, out of range or stale (Beeper.reading is null).
+// Elements are read directly rather than through consts: renderDiag can run before this point.
+function sensorContext() {
+  const box = $('sensorToAi'), r = Beeper.reading;
+  if (!box || !box.checked || !r) return undefined;
+  return { distanceM: Math.round(r.metres * 100) / 100, heightM: Math.round(Number($('sensorHeight').value) * 100) / 100 };
+}
+function sensorDiag() {
+  if (!$('sensorToAi').checked) return 'off';
+  const s = sensorContext();
+  return s ? `${s.distanceM.toFixed(2)} m @ ${s.heightM.toFixed(2)} m high` : `not sent (sensor ${Beeper.state})`;
+}
+const sensorBox = $('sensorToAi');
+const sensorHeightInput = $('sensorHeight');
+sensorBox.checked = loadPref('sensorToAi', true);
+sensorHeightInput.value = loadNumber('sensorHeight', 1);
+const showSensorHeight = () => { $('sensorHeightOut').textContent = `${Number(sensorHeightInput.value).toFixed(2)} m`; };
+sensorBox.addEventListener('change', () => savePref('sensorToAi', sensorBox.checked));
+sensorHeightInput.addEventListener('input', () => { saveNumber('sensorHeight', sensorHeightInput.value); showSensorHeight(); });
+showSensorHeight();
 
 // Header chip: what the sensor reports ('off' before Start).
 Beeper.onChange = (state) => {

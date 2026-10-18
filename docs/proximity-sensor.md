@@ -88,7 +88,33 @@ The server listens for the board on port 5000 (`DISTANCE_PORT`). **On macOS, the
 - **Temperature:** the code assumes ~20 °C; about 3% error at 0 °C.
 
 ## Not yet confirmed on a device
-The beeps and SSE feed were tested with simulated readings and a fake audio clock (20 + 11 checks). The health logging was tested with simulated dropout scenarios. Real-board power behaviour is still being debugged.
+The beeps and SSE feed were tested with simulated readings and a fake audio clock (27 + 11 checks, including 7 for `Beeper.reading`). Sending the reading to the AI was tested in the fake browser (9 checks) and with the real Perceptron API using fake readings ([vision.md](vision.md)). The health logging was tested with simulated dropout scenarios. Real-board power behaviour is still being debugged.
 
-## Idea, not built: feeding distance into Perceptron
-The reading could tell the model "something solid is straight ahead at <1.5 m: name it, don't say the number". That would help with glass doors and poles, and make "close" accurate. See the discussion in the session notes before building it.
+## Distance in the AI requests (`Beeper.reading` → `sensor`)
+
+The reading also goes to Perceptron with each frame, so the model can tell *what* is close; the beeps already tell *how* close.
+- **Settings → Proximity sensor:**
+  - **Share distance with AI** (`#sensorToAi`, default on, saved as `sensorToAi`)
+  - **Sensor height** (`#sensorHeight`, 0.1–2 m, default 1.00 m, saved as `sensorHeight`): how high the forward sensor is mounted, sent with every reading
+- **Only valid readings are sent.** `Beeper.reading` returns `{ metres, ageMs }` only for a number between 2 cm and 4 m that is at most 1.5 s old, and `null` for `Out_of_Range`, offline or stale. It works with beeps muted too.
+- The request gets `sensor: { distanceM, heightM }` (2 decimals) for narration, Fast + Low and spoken questions. The 🐞 overlay shows `sensor→AI: 0.85 m @ 1.00 m high` or `not sent (sensor offline)`.
+- How the model is told to use it, and measurements: [vision.md](vision.md), "Distance sensor context". In short: never says the number; confirms obstacles it can see in the center of the frame; ignores a reading it can't explain.
+- **Mounting height matters** because the beam only sees things at roughly that height. At 1 m it hits poles, bins, people and fences, but passes over curbs and steps, and under branches. The prompt says so, so the model doesn't drop a curb because the reading is far.
+
+## Design decisions
+
+| Decision | Why | Rejected alternative |
+|---|---|---|
+| **ESP8266 posts to the laptop server** | The phone page can't receive connections, and the ESP can't verify the server's self-signed HTTPS certificate. Plain HTTP to the server, then SSE to the phone, works with both. | ESP → phone directly; ESP over HTTPS. |
+| **A separate plain-HTTP port** (`DISTANCE_PORT`) | Keeps the sensor working while the phone uses HTTPS; `/distance` also works on 8080 because macOS AirPlay often holds 5000. | Only HTTPS. |
+| **Server-Sent Events to the phone** | < 50 ms delivery, one long-lived connection, automatic reconnect, no library. | Polling (up to 200 ms extra delay, constant requests); WebSockets (more code, no benefit for one-way data). |
+| **`ageMs` on connect, 1.5 s staleness** | A new connection gets the last reading, which may be old; `ageMs` stops it being treated as live, even with different clocks on phone and laptop. 1.5 s = several missed readings, so a short Wi-Fi hiccup doesn't silence the beeps. | Trusting the timestamp from the laptop's clock. |
+| **Distance as beeps, not speech** | Speech is slow (seconds per alert) and would crowd out the vision alerts; beeps update continuously and are understood instantly, like a parking sensor. The user asked for no spoken distances. | Speaking "obstacle 80 cm". |
+| **Curve: silent beyond 2 m, steep near the end** | Beyond 2 m, beeps would be constant noise in a corridor. The squared closeness keeps far beeps faint and slow and makes the last metre clearly urgent. Intensity lets the user start the ramp earlier. | Linear spacing (too busy far away, too gentle up close). |
+| **Scheduled on the audio clock** | `setTimeout` jitters by tens of ms on phones, which makes the rhythm uneven; scheduling 150 ms ahead on the Web Audio clock is sample-accurate. | `setInterval` beeps. |
+| **Ducking under speech (not at ≤10 cm)** | Speech stays intelligible, but an imminent collision is never quieter. | Muting during speech. |
+| **The board's own buzzer below 5 cm** | Works even if Wi-Fi, the laptop or the phone fails. | App-only warning. |
+| **Health fields and the server log** | "It disconnects on battery" has two causes (Wi-Fi vs power); the reset reason and uptime tell them apart without a serial cable. | Guessing. |
+| **Reading to the AI only when valid, toggleable** | A stale or out-of-range number would mislead the model. The toggle lets the user turn it off if it makes alerts worse in practice. | Always sending the last value. |
+| **Height is a setting, not a constant** | The sensor may be worn on the chest, belt or a cane; what it can and can't detect depends on it. | Assuming a fixed mount. |
+

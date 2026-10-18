@@ -2,7 +2,7 @@
 
 Guide for AI coding agents working in this repo. It describes the code as it exists and the plan for what comes next. `CLAUDE.md` only imports this file, so every agent reads the same guide.
 
-**System overviews live in [`docs/`](docs/README.md)**: architecture, vision, speech, proximity sensor, UI, server/API, testing, and [`docs/optimization.md`](docs/optimization.md), every speed and efficiency change with measurements. This file covers conventions, decisions and open questions for agents.
+**System overviews live in [`docs/`](docs/README.md)**: architecture, vision, speech, proximity sensor, UI, server/API, testing, and [`docs/optimization.md`](docs/optimization.md), every speed and efficiency change with measurements. Each system doc ends with a **Design decisions** table (why it's built that way, and what was rejected); `docs/architecture.md` also explains why the project stays on plain Node + HTML/JS rather than a framework. This file covers conventions, decisions and open questions for agents.
 
 > **Stack note.** An earlier plan for this project used Next.js/TypeScript on Vercel, Grok text-to-speech, and "rough distances" in speech. **That is not what was built**: the code is a zero-dependency Node server plus static HTML/JS in `narrator/`. Speech uses **ElevenLabs** (not Grok). Distances were deliberately removed, except stair counts. Don't start a Next.js migration or switch speech providers without asking the team (see "Decisions").
 
@@ -80,6 +80,7 @@ narrator/
     filter.js        shared by browser and Node: n/a and repeat filtering, viewChange()
     speech.js        ElevenLabs speech: audio queue, prefetch, interrupt, Web Audio playback (window.Speech)
     beeper.js        proximity beeps from the distance sensor: curve, scheduler, ducking (window.Beeper)
+    recorder.js      microphone → 16 kHz WAV (base64) for spoken questions, end-of-speech detection (window.Recorder)
 ```
 
 ## 4. Architecture and data flow
@@ -207,7 +208,8 @@ handleReply():
 - **Scheduler:** a lookahead loop runs every 50 ms and schedules 150 ms ahead on the audio clock. The next beep is due one *current* interval after the last, so approaching speeds up at once. Each beep is a sine `OscillatorNode` with a 5 ms attack and 60 ms decay.
 - **Levels:** master gain = volume × 0.3 while `Speech.pending > 0` (ducking), except when `urgent`. It ramps with `setTargetAtTime` so it doesn't click.
 - Shares `Speech.context`, the `AudioContext` unlocked in the Start tap.
-- **UI:** Beeps row in the footer: the `#beeps` toggle, `#beepVolume` 0–100 (default 60) and `#beepIntensity` 0.5–2 (default 1). They're saved in `localStorage` keys `beeps`, `beepVolume` and `beepIntensity`. The `#distance` header chip shows "obstacle 0.42 m", "sensor: clear" or "sensor offline".
+- **UI:** Beeps row in the footer: the `#beeps` toggle, `#beepVolume` 0–100 (default 60) and `#beepIntensity` 0.5–2 (default 1). They're saved in `localStorage` keys `beeps`, `beepVolume` and `beepIntensity`.
+- **`Beeper.reading`:** `{ metres, ageMs }` for a valid fresh reading (2 cm–4 m, ≤1.5 s old), else `null`. `app.js` `sensorContext()` turns it into `sensor: { distanceM, heightM }` on describe, Fast + Low and ask requests when `#sensorToAi` is on (default on; height `#sensorHeight`, default 1 m; keys `sensorToAi`, `sensorHeight`). `prompt.js` `cleanSensor`/`sensorText` add one paragraph to the user message. The `#distance` header chip shows "obstacle 0.42 m", "sensor: clear" or "sensor offline".
 - **Tests (simulated):** curve and scheduler, 20 checks with a fake audio clock and stream. Server stream, 11 checks with real HTTP. App wiring, 5 checks in the fake browser.
 
 ### UI (`index.html`, `style.css`, `ui.js`): redesigned 2026-10-18
@@ -309,6 +311,17 @@ handleReply():
   - **First version failed on stairs:** with only a stairs-down template, a stairs-up photo became "Drop-off: stairs going down". Fixed with one template per direction plus "direction decides the label": stairs up 5/6 and down 4/4 afterwards.
   - Examples are templates (`<object>, <where>`), because concrete examples get copied.
   - Regression: an aerial crosswalk photo and distant cyclists became `n/a`. |
+| **Spoken questions (🎤 Ask, `POST /api/ask`)** | User request. Perceptron Mk1.5 takes audio, so one request carries the frame and the WAV question; no speech-to-text step.
+  - The recording is encoded in the browser (`recorder.js`), because MediaRecorder formats aren't accepted.
+  - **Measured through the server:** 14/14 correct after the prompt fixes (median 660 ms). The first prompt said "Yes, it appears safe" for stairs going up, so the ask prompt now forbids calling a path with stairs, curbs or obstacles safe ("No"/"Careful" plus the hazard).
+  - Answers are urgent, not repeat-filtered, and not added to `said`.
+  - **Auto-send** (user request: no second tap): `Recorder.createSpeechDetector` ends the question after `SILENCE_MS = 1200` of quiet once speech was heard (level > max(0.015, 3× noise floor) for 200 ms); no speech in 6 s ends the ask with nothing sent. While the button is held, auto-send is ignored and release sends. Trailing silence is trimmed to 300 ms. Thresholds are tuned on synthetic audio and ElevenLabs speech, **not yet in real street noise**.
+  - Details in `docs/questions.md`. **iPhone audio routing after recording is unconfirmed.** |
+| **Distance reading in AI requests** (`sensor`, `#sensorToAi`, `#sensorHeight`) | User request. The model is told the reading and mounting height, to confirm what in the **center** of the frame is close; never to say the number (the user hears beeps); to ignore a reading it can't see the cause of; and that the beam passes over curbs and steps.
+  - **Measured** (real API, fake readings): 0 numbers spoken; latency unchanged; real close fence "close" 4/4 (1/2 without).
+  - **Contradicting readings** (0.6 m on open views): the first wording invented "close" obstacles 9/12 (a car across the street); the final wording 1/12.
+  - **Side effect:** the paragraph made the model label stairs going down "Trip hazard" 7/16 (0/8 without), so `filter.js` `fixStairLabel` now enforces the label from the direction, for all replies and answers.
+  - Ground hazards: curb "close" 2/4 with vs 3/4 without; one missed pothole in 4. Watch on real walks; the toggle turns it off. |
 | **Switchable prompt style** (`#safetyLabels`, `body.style`, `CLASSIC_PROMPT` in `prompt.js`) | User request: be able to go back to the pre-label responses. `CLASSIC_PROMPT` is the earlier prompt kept verbatim (checked equal to the saved copy). Default is safety. Fast + Low reasoning requests use the same style. |
 | **Safety escalation + label-aware repeats** (`filter.js` `hazardLabel`, `isRepeat`) | Labels are stripped before comparing words; otherwise every "Trip hazard: …" shares "trip hazard" and different hazards look like repeats. A reply with a label the matching earlier alert lacked is new, for fast and Fast + Low replies ("Curb ahead" → "Trip hazard: curb close ahead"). Alerts that are all label and filler repeat only an equally bare alert with the same label; without this rule, "Trip hazard: step ahead." would be spoken every frame. 21 unit checks. |
 | **Hazard speech priority** (`Speech.say(text, { urgent })`) | User request. A labelled alert stops a playing non-hazard clip and drops queued non-hazard clips; hazards never cut hazards. Uses per-clip cancellation (`dropNonUrgent`); the playback loop removes the clip it played by identity, since cut clips leave the queue. 8 checks with fake audio; the Interrupt setting still cuts everything. |
@@ -409,6 +422,6 @@ If you add a proper harness, put it in `narrator/eval/` and keep images out of g
 
 ## 12. Open questions for the team
 
-- Is the earlier Next.js/Vercel plan dropped for good, or is a migration of `narrator/` still wanted?
+- Is the earlier Next.js/Vercel plan dropped for good? The current recommendation is to stay on plain Node + HTML/JS (reasons in `docs/architecture.md`, "Why not a bigger web stack").
 - Speech in queue mode can fall behind during busy stretches. (Hazards now cut in ahead of other speech. Is that enough, or should the queue also be capped?)
 - Where will this be deployed for the demo? Hosting needs real HTTPS plus the API key kept server-side.

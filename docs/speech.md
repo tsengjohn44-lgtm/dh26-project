@@ -62,6 +62,21 @@ Code: `narrator/public/speech.js`, and `speak()`, `startSpeech()` and the early-
 - Speech-to-text transcripts confirmed the tags aren't spoken.
 - **MP3 vs PCM:** MP3 had to be fully downloaded and decoded (~0.7–0.9 s+) before playing; PCM plays from the first chunk (~0.2 s).
 
+## Design decisions
+
+| Decision | Why | Rejected alternative |
+|---|---|---|
+| **ElevenLabs, not the browser's built-in voice** | The browser `speechSynthesis` version lagged about 10 s behind the alerts on the test phone and sounded robotic. The user asked for realism and speed, with unlimited credits. | `speechSynthesis` (removed); Grok TTS (an earlier plan). |
+| **`eleven_v4_turbo`** | The most realistic of ElevenLabs' real-time models (~100 ms inference). | Flash v2.5: ~75 ms but noticeably less natural; Eleven v4: best quality but not real-time. |
+| **Raw PCM streamed, not MP3** | PCM can be played from the first chunk (~0.2 s); MP3 had to be fully downloaded and decoded first (~0.7–0.9 s+). | MP3 via `<audio>`. |
+| **Early start on the server** | The server sees the model's reply first; starting speech there saves a phone↔laptop round trip (median 901 → 510 ms with a simulated 150 ms hop). The phone's request then picks up the job already running. | Starting only when the phone asks. |
+| **Queue, nothing dropped (default)** | The user asked that no alert be lost. Each clip downloads as soon as it is queued, so the next is ready when the current one ends. | Dropping older alerts by default (kept as the Interrupt option). |
+| **Hazards cut in** | A hazard must not wait behind a sign reading. Hazards never cut other hazards, so no warning is lost. | Strict order for everything; or every new alert cutting in. |
+| **`[rapidly]` tag for speed** | v4 Turbo ignores the speed setting; this tag was the fastest of those tried (7.44 s vs 10.16 s for 3 alerts) and isn't spoken. | Flash v2.5 at speed 1.2 (faster, less natural; available via `ELEVENLABS_MODEL`). |
+| **Web Audio, one context unlocked in the Start tap** | iOS only allows sound started from a tap; one context unlocked there plays everything afterwards, and allows sample-accurate scheduling of chunks. | A new `<audio>` element per clip (blocked on iOS). |
+| **Pause sending frames while speaking (toggle)** | Each alert is heard in full before the app looks again, so speech doesn't fall behind the scene. Optional, because it means nothing new is noticed for 2–3 s. | Always sending. |
+| **One retry and an 8 s stall watchdog** | Mobile networks drop requests; one retry recovers most failures, and the watchdog stops a hung download from pausing the camera forever. | Unlimited retries; no timeout. |
+
 ## Not yet confirmed on a phone
 
 Everything above was tested with the real ElevenLabs API through the server, and in a simulated browser (12 queue checks plus a stall test). Listening on a phone is still to do.

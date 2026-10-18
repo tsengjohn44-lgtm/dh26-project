@@ -67,9 +67,22 @@
     });
   }
 
+  // The stairs' direction decides the label (prompt rule): going up is a Trip hazard, going down a
+  // Drop-off. The model sometimes mixes them up; with the distance-sensor paragraph added, stairs
+  // going down were labelled "Trip hazard" in 7 of 16 replies (0 of 8 without it). Fixed here so
+  // the spoken label is always right. Left alone when the direction is unclear (both or neither).
+  function fixStairLabel(text) {
+    const label = hazardLabel(text);
+    if ((label !== 'trip' && label !== 'drop') || !/\b(stairs?|steps?|staircase|stairway)\b/i.test(text)) return text;
+    const up = /\bup(ward)?\b/i.test(text), down = /\bdown(ward)?\b/i.test(text);
+    if (up === down) return text;
+    const want = down ? 'Drop-off: ' : 'Trip hazard: ';
+    return hazardLabel(want) === label ? text : text.replace(LABEL_RE, want);
+  }
+
   // { text, reason }: text is the alert to show, or null with reason 'n/a' | 'repeat'.
   function classifyReply(raw, said, options = {}) {
-    const text = String(raw).replace(/\s+/g, ' ').trim().replace(/^"([^"]*)"$/, '$1').trim();
+    const text = fixStairLabel(String(raw).replace(/\s+/g, ' ').trim().replace(/^"([^"]*)"$/, '$1').trim());
     if (!text || isNothing(text)) return { text: null, reason: 'n/a' };
     if (isRepeat(text, said, options)) return { text: null, reason: 'repeat' };
     return { text: cautiousStairCount(text), reason: 'new' };
@@ -118,7 +131,7 @@
     return ((sumSq / n - mean * mean) / (level * level)) * 1000;
   }
 
-  const api = { isNothing, isRepeat, classifyReply, finalizeReply, viewChange, cautiousStairCount, sharpness, hazardLabel };
+  const api = { isNothing, isRepeat, classifyReply, finalizeReply, viewChange, cautiousStairCount, fixStairLabel, sharpness, hazardLabel };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.Filter = api;
 })(this);

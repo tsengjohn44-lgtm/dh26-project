@@ -60,6 +60,14 @@ window.Speech = (() => {
     return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
   }
 
+  // 🎤 Ask records from the microphone, which the "playback" session doesn't allow on iPhone.
+  // So the session is "play-and-record" only while recording, and back to "playback" as soon as
+  // the mic is released, so the answer plays loudly through the speaker again.
+  function setRecording(on) {
+    if (!navigator.audioSession) return;
+    try { navigator.audioSession.type = on ? 'play-and-record' : 'playback'; } catch { /* unsupported value */ }
+  }
+
   // Must run inside a user gesture (the Start tap) for iOS to allow audio.
   function unlock() {
     usePlaybackSession();
@@ -252,6 +260,7 @@ window.Speech = (() => {
 
   return {
     unlock,
+    setRecording,
     say,
     cancel,
     stats,

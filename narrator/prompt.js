@@ -100,7 +100,28 @@ const REASONING_BUDGET = 2048;
 // instead (400) gave empty answers in 2/8 runs.
 const BRIEF_REASONING = '\n\nThink briefly: at most 3 short sentences of reasoning, then answer.';
 
-// body: { image, prevImage?, prevDtMs?, said?: string[], reasoning?, style?: 'safety' | 'classic' }
+// ---------- forward distance sensor (ESP8266, optional) ----------
+// The app adds { distanceM, heightM } when the sensor has a valid, fresh reading and "Share distance
+// with AI" is on. It goes in the user message (it changes every frame), so the system prompt stays
+// the same with or without it. The user hears distances as beeps, so alerts never say the number.
+function cleanSensor(sensor) {
+  if (!sensor || typeof sensor !== 'object') return null;
+  const d = Number(sensor.distanceM), h = Number(sensor.heightM);
+  if (!Number.isFinite(d) || d < 0.02 || d > 4.5 || !Number.isFinite(h) || h < 0 || h > 3) return null;
+  return { d: Math.round(d * 100) / 100, h: Math.round(h * 100) / 100 };
+}
+
+function sensorText(sensor, { ask = false } = {}) {
+  const s = cleanSensor(sensor);
+  if (!s) return null;
+  return `Forward distance sensor (ultrasonic, mounted ${s.h} m above the ground, aimed straight ahead): nearest surface ${s.d} m. The person already hears this distance as beeps. `
+    + 'Use it only to confirm what you see: if an object in the center of the frame, directly in their path, plausibly is that close, call it close ("close" means within about 1.5 m). '
+    + 'If nothing in the center of the frame looks that close, ignore the reading completely: never blame it on things at the sides or farther away, and never invent an object. '
+    + 'It says nothing about the ground: curbs, steps and holes below its height can be close even when the reading is far, so judge those from the image as usual. '
+    + (ask ? 'Give a distance only if the question asks how far, and then roughly.' : 'Never say the distance or this number.');
+}
+
+// body: { image, prevImage?, prevDtMs?, said?: string[], reasoning?, style?: 'safety' | 'classic', sensor? }
 //   ->  payload, or throws on bad input. style defaults to 'safety' (hazard labels).
 function buildPayload(body, model) {
   if (!isImageDataUrl(body.image)) throw new Error('Expected { image: "data:image/..." }');
@@ -118,6 +139,7 @@ function buildPayload(body, model) {
   const said = cleanSaid(body.said);
   const text = [
     clip && `These are two frames ${dt} ms apart; the last is now. Compare them to tell what is moving toward the person.`,
+    sensorText(body.sensor),
     said.length ? `Already said (oldest first):\n${said.map((s) => `- ${s}`).join('\n')}` : 'Already said: nothing yet.',
     said.length ? 'What is new and important now?' : 'What is important now?',
   ].filter(Boolean).join('\n\n');
@@ -141,6 +163,47 @@ function buildPayload(body, model) {
   };
 }
 
+// ---------- spoken questions (POST /api/ask) ----------
+// Perceptron Mk1.5 takes audio directly, so one request carries the camera frame and the
+// recorded question; no separate speech-to-text. Measured: 3-4 s questions cost ~45 audio tokens
+// and were answered correctly in 0.66-1.09 s ("rooms 71A, 71B, 71F and 71G, arrow to the right";
+// "not safe to walk forward, stairs leading down").
+const ASK_PROMPT = `You are the eyes of a blind person. They ask a question out loud (the audio) about what their phone camera sees right now (the image).
+Answer their question directly, in at most 2 short, plain sentences.
+Safety first: if anything in their path is a danger, say it first, starting with one of these labels: Trip hazard, Drop-off, Head hazard, Moving hazard, Obstacle.
+If they ask whether it is safe to walk or go ahead and there are stairs, curbs, edges, holes, uneven ground or obstacles in the path, answer "No" or "Careful" and name each with its label. Never say it is safe when one of these is visible.
+Stairs: always say going up or going down, and a cautious minimum count: "at least N steps", counting only edges you clearly see.
+Positions as left, ahead or right; "close" when within about two steps. Quote readable text exactly, including arrow directions as they appear.
+Only state what you can actually see. If the image can't answer the question, say so briefly.
+If you can't understand the question, reply exactly: Sorry, I didn't catch that.
+Do not describe or repeat the audio.`;
+
+const MAX_AUDIO_BASE64 = 2_000_000; // ~1.5 MB of 16 kHz WAV ≈ 45 s; the app caps recordings at 15 s
+
+// body: { image, audio: base64 WAV (no data: prefix), reasoning?, sensor? }  ->  payload, or throws.
+function buildAskPayload(body, model) {
+  if (!isImageDataUrl(body.image)) throw new Error('Expected { image: "data:image/..." }');
+  if (typeof body.audio !== 'string' || body.audio.length < 100 || body.audio.length > MAX_AUDIO_BASE64 || !/^[A-Za-z0-9+/=]+$/.test(body.audio)) {
+    throw new Error('Expected { audio: base64 WAV }');
+  }
+  const reasoning = REASONING_LEVELS.includes(body.reasoning) ? body.reasoning : 'none';
+  return {
+    model,
+    stream: false,
+    reasoning_effort: reasoning,
+    temperature: 0.2,
+    max_completion_tokens: reasoning === 'none' ? 90 : REASONING_BUDGET,
+    messages: [
+      { role: 'system', content: ASK_PROMPT + (reasoning === 'low' ? BRIEF_REASONING : '') },
+      { role: 'user', content: [
+        { type: 'image_url', image_url: { url: body.image } },
+        { type: 'input_audio', input_audio: { data: body.audio, format: 'wav' } },
+        { type: 'text', text: [sensorText(body.sensor, { ask: true }), 'Answer the spoken question about the image.'].filter(Boolean).join('\n\n') },
+      ] },
+    ],
+  };
+}
+
 function cleanSaid(said) {
   return (Array.isArray(said) ? said : [])
     .filter((s) => typeof s === 'string' && s.trim())
@@ -148,4 +211,4 @@ function cleanSaid(said) {
     .map((s) => s.trim().slice(0, 200));
 }
 
-module.exports = { SYSTEM_PROMPT, CLASSIC_PROMPT, MAX_SAID, REASONING_LEVELS, REASONING_BUDGET, BRIEF_REASONING, buildPayload };
+module.exports = { cleanSensor, sensorText, SYSTEM_PROMPT, CLASSIC_PROMPT, ASK_PROMPT, MAX_SAID, REASONING_LEVELS, REASONING_BUDGET, BRIEF_REASONING, buildPayload, buildAskPayload };
