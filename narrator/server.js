@@ -9,6 +9,7 @@ const http = require('http');
 const https = require('https');
 const { execFileSync } = require('child_process');
 const { buildPayload } = require('./prompt');
+const Filter = require('./public/filter.js');
 
 const ROOT = __dirname;
 const PUBLIC = path.join(ROOT, 'public');
@@ -32,8 +33,14 @@ if (!API_KEY) {
 const TTS_KEY = process.env.ELEVENLABS_API_KEY;
 const TTS_MODEL = process.env.ELEVENLABS_MODEL || 'eleven_v4_turbo';
 const TTS_VOICE = process.env.ELEVENLABS_VOICE_ID || 'JBFqnCBsd6RMkjVDRZzb';
-const TTS_FORMAT = process.env.ELEVENLABS_FORMAT || 'mp3_44100_128';
-const TTS_URL = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(TTS_VOICE)}/stream?output_format=${TTS_FORMAT}`;
+// Raw 16-bit PCM so the browser can play each chunk as it arrives (MP3 had to be fully
+// downloaded and decoded first: ~0.9 s vs ~0.2 s to first audio). 44100 needs the Pro tier.
+const TTS_RATE = Number(process.env.ELEVENLABS_SAMPLE_RATE || 24000);
+const TTS_URL = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(TTS_VOICE)}/stream?output_format=pcm_${TTS_RATE}`;
+// Faster delivery. v3/v4 models ignore voice_settings.speed (measured: same length at 1.0-1.5)
+// but follow the audio tag, which isn't spoken: ~20% shorter clips. Other models use speed.
+const TTS_SPEED = Number(process.env.ELEVENLABS_SPEED || 1.2);
+const TTS_TAG = /^eleven_v[34]/.test(TTS_MODEL) ? (process.env.ELEVENLABS_TAG ?? '[speaking quickly]') : '';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -116,8 +123,13 @@ function readJson(req, limit = 16 * 1024 * 1024) {
 // Responds with text/plain: the model's reply (a short alert, or "n/a"). The browser decides
 // whether it is new enough to show. Server-Timing reports how long Perceptron took.
 async function describe(req, res) {
-  let payload;
-  try { payload = buildPayload(await readJson(req), MODEL); } catch (e) { return send(res, 400, `Bad request: ${e.message}`); }
+  let body, payload;
+  try {
+    body = await readJson(req);
+    payload = buildPayload(body, MODEL);
+  } catch (e) {
+    return send(res, 400, `Bad request: ${e.message}`);
+  }
   const t0 = performance.now();
 
   const abort = new AbortController();
@@ -153,55 +165,116 @@ async function describe(req, res) {
     if (abort.signal.aborted) return;
     return send(res, 502, `Bad upstream response: ${e.message}`);
   }
+  const reply = (json.choices?.[0]?.message?.content || '').trim();
+  // Same decision the phone will make (public/filter.js); if it will be a new alert, start
+  // generating its speech now. The phone's `said` may be newer, so it can still skip it.
+  const alert = Filter.classifyReply(reply, Array.isArray(body.said) ? body.said : []).text;
+  if (alert) startEarlySpeech(alert);
   res.writeHead(200, {
     'Content-Type': 'text/plain; charset=utf-8',
     'Cache-Control': 'no-store',
     'Server-Timing': `api;dur=${Math.round(performance.now() - t0)}`,
   });
-  res.end((json.choices?.[0]?.message?.content || '').trim());
+  res.end(reply);
 }
 
-// POST /api/speak  { text }  ->  audio/mpeg, streamed through from ElevenLabs as it is generated.
-// Server-Timing reports ElevenLabs' time to first byte.
+// POST /api/speak  { text }  ->  raw 16-bit little-endian mono PCM at X-Sample-Rate, streamed
+// through from ElevenLabs as it is generated. Server-Timing reports ElevenLabs' time to first byte.
 async function speak(req, res) {
   if (!TTS_KEY) return send(res, 503, 'Voice is off: set ELEVENLABS_API_KEY in narrator/.env');
   let text;
   try { text = String((await readJson(req, 64 * 1024)).text || '').trim().slice(0, 500); } catch (e) { return send(res, 400, `Bad request: ${e.message}`); }
   if (!text) return send(res, 400, 'Expected { text }');
 
-  const abort = new AbortController();
-  res.on('close', () => abort.abort());
-  const t0 = performance.now();
-  let upstream;
-  try {
-    upstream = await fetch(TTS_URL, {
-      method: 'POST',
-      headers: { 'xi-api-key': TTS_KEY, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
-      body: JSON.stringify({ text, model_id: TTS_MODEL, language_code: 'en' }),
-      signal: abort.signal,
-    });
-  } catch (e) {
-    if (abort.signal.aborted) return;
-    return send(res, 502, `ElevenLabs error: ${e.message}`);
-  }
-  if (!upstream.ok) {
-    const detail = await upstream.text().catch(() => '');
-    console.error(`ElevenLabs ${upstream.status}: ${detail.slice(0, 500)}`);
-    const status = upstream.status === 429 ? 429 : 502;
-    return send(res, status, `ElevenLabs ${upstream.status}: ${detail.slice(0, 300)}`);
+  const job = takeEarlySpeech(text) || startSpeech(text);
+  res.on('close', () => { if (!job.done) job.abort.abort(); });
+  await job.responded;
+  if (job.status !== 200) {
+    if (job.abort.signal.aborted) return;
+    console.error(`ElevenLabs ${job.status || 'error'}: ${job.error.slice(0, 500)}`);
+    return send(res, job.status === 429 ? 429 : 502, `ElevenLabs ${job.status || 'error'}: ${job.error.slice(0, 300)}`);
   }
 
   res.writeHead(200, {
-    'Content-Type': upstream.headers.get('content-type') || 'audio/mpeg',
+    'Content-Type': 'application/octet-stream',
+    'X-Sample-Rate': String(TTS_RATE),
+    'X-Speech-Early': job.early ? '1' : '0',
     'Cache-Control': 'no-store',
-    'Server-Timing': `tts;dur=${Math.round(performance.now() - t0)}`,
+    'Server-Timing': `tts;dur=${job.ttfb}`,
   });
-  try {
-    for await (const chunk of upstream.body) res.write(chunk);
-  } catch (e) {
-    if (!abort.signal.aborted) console.error('ElevenLabs stream error:', e.message);
+  res.flushHeaders();
+  // Replay what an early job already buffered, then follow it live.
+  for (let i = 0; ; ) {
+    while (i < job.chunks.length) res.write(job.chunks[i++]);
+    if (job.done) break;
+    await job.more();
   }
   res.end();
+}
+
+// One ElevenLabs generation. Chunks are buffered as they arrive so a request started early
+// (see describe) can be picked up later by /api/speak without losing the start of the audio.
+function startSpeech(text) {
+  const job = { text, chunks: [], done: false, status: 0, error: '', ttfb: 0, early: false, abort: new AbortController(), waiters: [] };
+  const wake = () => { const w = job.waiters; job.waiters = []; w.forEach((fn) => fn()); };
+  job.more = () => new Promise((resolve) => job.waiters.push(resolve));
+  let responded;
+  job.responded = new Promise((resolve) => { responded = resolve; });
+  const t0 = performance.now();
+  (async () => {
+    try {
+      const upstream = await fetch(TTS_URL, {
+        method: 'POST',
+        headers: { 'xi-api-key': TTS_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: TTS_TAG ? `${TTS_TAG} ${text}` : text,
+          model_id: TTS_MODEL,
+          language_code: 'en',
+          voice_settings: { speed: TTS_SPEED },
+        }),
+        signal: job.abort.signal,
+      });
+      job.ttfb = Math.round(performance.now() - t0);
+      job.status = upstream.status;
+      if (!upstream.ok) { job.error = await upstream.text().catch(() => ''); return; }
+      responded();
+      for await (const chunk of upstream.body) { job.chunks.push(chunk); wake(); }
+    } catch (e) {
+      if (!job.abort.signal.aborted) { job.error = job.error || e.message; console.error('ElevenLabs stream error:', e.message); }
+    } finally {
+      job.done = true;
+      responded();
+      wake();
+    }
+  })();
+  return job;
+}
+
+// Early speech: when describe() gets a reply that would be shown as a new alert, it starts the
+// ElevenLabs request right away instead of waiting for the phone to receive the reply and ask
+// for audio, which saves a phone-laptop round trip. The phone runs the same filter, so it
+// usually asks for exactly this text; unclaimed jobs are dropped after EARLY_TTL_MS.
+const EARLY_SPEECH = TTS_KEY && process.env.ELEVENLABS_EARLY !== '0';
+const EARLY_MAX = 2;          // concurrent early generations, to stay within ElevenLabs' limit
+const EARLY_TTL_MS = 15000;
+const earlySpeech = new Map(); // text -> { job, timer }
+
+function startEarlySpeech(text) {
+  if (!EARLY_SPEECH || earlySpeech.has(text)) return;
+  const busy = [...earlySpeech.values()].filter((e) => !e.job.done).length;
+  if (busy >= EARLY_MAX) return;
+  const job = startSpeech(text);
+  job.early = true;
+  const timer = setTimeout(() => { earlySpeech.delete(text); job.abort.abort(); }, EARLY_TTL_MS);
+  earlySpeech.set(text, { job, timer });
+}
+
+function takeEarlySpeech(text) {
+  const entry = earlySpeech.get(text);
+  if (!entry) return null;
+  earlySpeech.delete(text);
+  clearTimeout(entry.timer);
+  return entry.job;
 }
 
 function handler(req, res) {
@@ -214,7 +287,7 @@ function handler(req, res) {
 http.createServer(handler).listen(HTTP_PORT, '0.0.0.0', () => {
   console.log(`\nLive Scene Narrator  (model: ${MODEL})`);
   console.log(TTS_KEY
-    ? `  Voice:    ElevenLabs ${TTS_MODEL}, voice ${TTS_VOICE}, ${TTS_FORMAT}`
+    ? `  Voice:    ElevenLabs ${TTS_MODEL}, voice ${TTS_VOICE}, pcm ${TTS_RATE} Hz, ${TTS_TAG || `speed ${TTS_SPEED}`}, early start ${EARLY_SPEECH ? 'on' : 'off'}`
     : '  Voice:    off (set ELEVENLABS_API_KEY in narrator/.env to enable)');
   console.log(`  Desktop:  http://localhost:${HTTP_PORT}`);
 });

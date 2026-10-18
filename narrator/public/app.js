@@ -60,10 +60,25 @@ let wakeLock = null;
 const CAMERA_SIZE = { width: { ideal: 1920 }, height: { ideal: 1440 }, aspectRatio: { ideal: 4 / 3 } };
 const getCamera = (video) => navigator.mediaDevices.getUserMedia({ audio: false, video: { ...CAMERA_SIZE, ...video } });
 
+// Bumped by stopCamera(). A camera that finishes opening after a newer stop/reopen is closed
+// at once instead of being kept: otherwise it would stay on with nothing showing or stopping it.
+let cameraToken = 0;
+async function openStream(constraints) {
+  const token = cameraToken;
+  const s = await getCamera(constraints);
+  if (token !== cameraToken) { s.getTracks().forEach((t) => t.stop()); throw new Error('camera reopened'); }
+  return s;
+}
+
 async function openCamera() {
   stopCamera();
-  stream = await getCamera({ facingMode: { ideal: facing } });
-  if (facing === 'environment') await useWidestLens();
+  try {
+    stream = await openStream({ facingMode: { ideal: facing } });
+    if (facing === 'environment') await useWidestLens();
+  } catch (e) {
+    if (e.message === 'camera reopened') return; // superseded by a newer stop/reopen
+    throw e;
+  }
   video.srcObject = stream;
   await video.play();
   showLens();
@@ -80,12 +95,16 @@ async function useWidestLens() {
     if (wide && wide.deviceId !== current) {
       stopCamera(); // phones generally allow only one open camera
       try {
-        stream = await getCamera({ deviceId: { exact: wide.deviceId } });
-      } catch {
-        stream = await getCamera({ facingMode: { ideal: facing } });
+        stream = await openStream({ deviceId: { exact: wide.deviceId } });
+      } catch (e) {
+        if (e.message === 'camera reopened') throw e;
+        stream = await openStream({ facingMode: { ideal: facing } });
       }
     }
-  } catch { /* enumerateDevices unsupported: keep the default camera */ }
+  } catch (e) {
+    if (e.message === 'camera reopened') throw e; // superseded: let openCamera() give up
+    /* enumerateDevices unsupported: keep the default camera */
+  }
 
   try {
     const track = stream.getVideoTracks()[0];
@@ -102,11 +121,13 @@ function showLens() {
 }
 
 function stopCamera() {
+  cameraToken++;
   if (stream) stream.getTracks().forEach((t) => t.stop());
   stream = null;
 }
 
 function grabFrame() {
+  if (!stream) return null; // camera (re)opening: the video may still hold a stale frame
   const w = video.videoWidth, h = video.videoHeight;
   if (!w || !h) return null;
   const scale = Math.min(1, MAX_SIDE / Math.max(w, h));
@@ -249,8 +270,57 @@ function setStatus(text, live) {
   statusEl.classList.toggle('live', !!live);
 }
 
+// ---------- screen orientation ----------
+// Tilting the phone (e.g. pointing it at the ground) can make Android rotate the screen 180°.
+// Android doesn't report a 180° turn like other rotations (width and height stay the same),
+// so Chrome can keep drawing the camera at the old angle: the preview, and the frames sent
+// to the model, end up upside down. Locking the screen to portrait prevents the rotation.
+// Chrome only allows the lock in fullscreen, so phones go fullscreen on Start.
+const isPhone = matchMedia('(pointer: coarse)').matches;
+
+function lockPortrait() {
+  if (!isPhone || !document.documentElement.requestFullscreen || !screen.orientation?.lock) return;
+  const enter = document.fullscreenElement ? Promise.resolve() : document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+  enter.then(() => screen.orientation.lock('portrait-primary'))
+    .catch(() => { /* not allowed here (e.g. iOS, no tap): the fallbacks below cover it */ });
+}
+
+function unlockPortrait() {
+  try { screen.orientation?.unlock(); } catch { /* unsupported */ }
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+}
+
+// Fullscreen ends if the camera permission prompt, a back swipe or an app switch interrupts
+// it. The next tap anywhere (except Start/Stop, which would flicker) locks again.
+document.addEventListener('pointerdown', (e) => {
+  if (running && !document.fullscreenElement && !startBtn.contains(e.target)) lockPortrait();
+});
+
+// Reopen the camera, one reopen at a time.
+let cameraBusy = Promise.resolve();
+function reopenCamera() {
+  cameraBusy = cameraBusy
+    .then(() => (running || stream ? openCamera() : null))
+    .catch((e) => { currentEl.textContent = `Camera error: ${e.message}`; });
+  return cameraBusy;
+}
+
+// Fallback when the lock isn't in effect: after a 180° screen turn, reopen the camera so the
+// browser sets up its rotation again.
+let lastAngle = screen.orientation?.angle ?? 0;
+screen.orientation?.addEventListener('change', () => {
+  const angle = screen.orientation.angle;
+  const turnedOver = Math.abs(angle - lastAngle) === 180;
+  lastAngle = angle;
+  if (!turnedOver || !running) return;
+  resetView(); // the old frames were upside down; describe the view afresh
+  reopenCamera();
+});
+
 async function start() {
   Speech.unlock(); // must happen synchronously in the Start tap, before any await (iOS)
+  lockPortrait();  // also needs the tap: fullscreen + portrait lock (Android). After unlock():
+                   // requestFullscreen uses up the tap, and unlock() still needs it.
   if (!navigator.mediaDevices?.getUserMedia) {
     currentEl.textContent = 'Camera unavailable. Open this page over HTTPS (or localhost).';
     return;
@@ -261,6 +331,7 @@ async function start() {
     currentEl.textContent = `Camera error: ${e.message}`;
     return;
   }
+  if (!stream) return; // Stop was tapped while the camera was opening
   running = true;
   const id = ++runId;
   pausedUntil = 0;
@@ -290,6 +361,7 @@ function stop() {
   Speech.cancel();
   stopCamera();
   releaseWakeLock();
+  unlockPortrait();
   startBtn.textContent = 'Start';
   startBtn.classList.remove('running');
   setStatus('Idle', false);
@@ -309,9 +381,7 @@ $('flip').addEventListener('click', async () => {
   facing = facing === 'environment' ? 'user' : 'environment';
   video.style.transform = facing === 'user' ? 'scaleX(-1)' : '';
   resetView(); // a different camera is a new view (and its frames aren't a clip with the old)
-  if (stream) {
-    try { await openCamera(); } catch (e) { currentEl.textContent = `Camera error: ${e.message}`; }
-  }
+  if (stream) await reopenCamera();
 });
 
 // ---------- voice ----------
@@ -336,7 +406,7 @@ interruptBox.addEventListener('change', () => {
 });
 
 function renderVoice() {
-  const { lastMs, lastError } = Speech.stats;
+  const { delayMs, lastError } = Speech.stats;
   if (!Speech.enabled) {
     if (lastError && voiceBox.checked) voiceBox.checked = false; // server has no ElevenLabs key
     voiceEl.textContent = lastError ? `voice off: ${lastError.slice(0, 60)}` : '';
@@ -345,7 +415,7 @@ function renderVoice() {
   const waiting = Math.max(0, Speech.pending - 1);
   voiceEl.textContent = lastError
     ? `voice error: ${lastError.slice(0, 60)}`
-    : [lastMs && `voice ${lastMs} ms`, waiting && `${waiting} queued`].filter(Boolean).join(' · ');
+    : [delayMs && `voice starts in ${delayMs} ms`, waiting && `${waiting} queued`].filter(Boolean).join(' · ');
 }
 Speech.onChange = renderVoice;
 

@@ -47,7 +47,10 @@ node server.js                            # Node >= 18, no npm install
   - `ELEVENLABS_API_KEY` (optional; without it the app runs silently and `/api/speak` returns 503)
   - `ELEVENLABS_MODEL` (default `eleven_v4_turbo`)
   - `ELEVENLABS_VOICE_ID` (default `JBFqnCBsd6RMkjVDRZzb`, a default ElevenLabs voice)
-  - `ELEVENLABS_FORMAT` (default `mp3_44100_128`)
+  - `ELEVENLABS_SAMPLE_RATE` (default `24000`; raw PCM output. 44100 requires the ElevenLabs Pro tier and is refused on the current key)
+  - `ELEVENLABS_TAG` (default `[speaking quickly]`, prefixed to the text for v3/v4 models; set it empty to disable)
+  - `ELEVENLABS_EARLY` (default on; `0` turns off early speech, which starts generating audio in `describe()`)
+  - `ELEVENLABS_SPEED` (default `1.2`; `voice_settings.speed`, which only non-v3/v4 models such as Flash honor)
   - `PORT` (8080), `HTTPS_PORT` (8443)
 - After changing files under `public/`, hard-refresh the phone. After changing `server.js` or `prompt.js`, restart the server.
 
@@ -116,7 +119,13 @@ handleReply():
   - It aborts the upstream request if the client disconnects.
 - `speak()` handles `POST /api/speak` with `{text}`:
   - It calls ElevenLabs `POST /v1/text-to-speech/{voice}/stream?output_format=…` with `model_id` and `language_code: 'en'`, authenticated with the `xi-api-key` header.
-  - It streams the MP3 bytes through to the browser, with `Server-Timing: tts;dur=<time to first byte>`.
+  - It requests `output_format=pcm_<rate>`, prefixes `ELEVENLABS_TAG` to the text for v3/v4 models, and sends `voice_settings.speed`.
+  - Each ElevenLabs request is a job created by `startSpeech(text)`. A job buffers its chunks, so a listener that arrives late still gets the whole clip: `speak()` replays the buffered chunks, then follows the job with `job.more()`.
+  - **Early speech:** after Perceptron replies, `describe()` runs the same `Filter.classifyReply(reply, body.said)` the phone will run. If the reply would be a new alert, `startEarlySpeech()` starts its job immediately, stored by alert text.
+    - `speak()` first checks for an early job (`takeEarlySpeech`) before starting a new one. The response header `X-Speech-Early: 1|0` says which happened.
+    - At most 2 early jobs run at once; unclaimed jobs are aborted after 15 s.
+    - The phone's `said` can be newer than the server's, so it may skip an alert; the early job then expires unused.
+  - It streams the raw 16-bit little-endian mono PCM through to the browser, with headers `X-Sample-Rate` and `Server-Timing: tts;dur=<time to first byte>`.
   - It returns 503 without a key, passes 429 through, and turns other errors into 502.
   - The server does **no filtering**. All "is this worth showing" logic lives in the browser, because only the browser knows what is currently on screen while several requests are in flight.
 
@@ -144,12 +153,21 @@ handleReply():
 
 ### `narrator/public/speech.js` (`window.Speech`)
 - `unlock()` must run synchronously inside a user tap: `start()` calls it before any `await`, and the Voice toggle calls it too. It creates and resumes the `AudioContext` and plays one silent sample, which completes the iOS unlock.
-- `say(text)` adds `{text, audio: synthesize()}` to the queue. Generation starts at once (one retry on failure); then `pump()` runs.
-- `pump()` plays the queue head when its audio is ready, then the next. It always plays in order, even if a later clip finished generating first.
-- `cancel()` bumps `generation`, empties the queue and stops the current clip. Interrupt mode calls it before queueing; so does `stop()`.
+- `say(text)` creates a clip with `makeClip()`, which starts `download()` at once. It then adds the clip to the queue and runs `pump()`.
+- `download()` reads the PCM stream and converts the 16-bit samples to `Float32Array` chunks. It handles a byte split across network chunks. The first chunk is released immediately; later ones are merged to at least 60 ms. It retries once if the request fails before any audio arrives.
+- `pump()` and `playClip()` play the queue head while its chunks arrive. Chunks are scheduled back to back as `AudioBufferSourceNode`s, with 50 ms of headroom before the first. Clips always play in order, even if a later one finished generating first.
+- `stats.delayMs` is the time from `say()` to the first audio, recorded only for clips that had nothing queued ahead of them. The voice chip shows it.
+- `cancel()` bumps `generation`, aborts the downloads, empties the queue, and stops every scheduled source. Interrupt mode calls it before queueing; so does `stop()`.
 - A 503 from the server (no key) turns voice off and shows the reason in the voice chip.
 - `app.js` calls `Speech.say(text)` for every new alert shown. Toggle state is remembered on the device (`localStorage` keys `voice` and `interrupt`).
-- Tested in Node with fake fetch and fake Web Audio, 9 checks: ordering when generation finishes out of order, no loss, the next clip starts as soon as the previous ends, interrupt cut-off, retry, cancel, and voice off. **Not yet tested with a real ElevenLabs key or on a phone.**
+- Tested in Node with fake fetch streams and a fake Web Audio clock, 12 checks:
+  - audio starts on the first chunk, not after the full download
+  - in-order playback when clips finish generating out of order, with no overlap and no loss
+  - the next clip starts as soon as the previous ends
+  - odd byte splits decode correctly
+  - interrupt, retry, cancel, and voice off
+- Real API through `server.js`: first audio arrives in about 200 ms (about 400 ms on a cold connection).
+- **Not yet verified by listening on a phone.**
 
 ### `narrator/public/app.js`
 - **Camera:** `openCamera()` requests 1920×1440 at 4:3. On most phones that uses the full sensor; 16:9 crops it. Then `useWidestLens()`:
@@ -167,6 +185,15 @@ handleReply():
   - the old alert moves to history
   - the caption shows "Looking…"
   - if the new view gets `n/a`, the caption shows "Nothing important in view."
+- **Screen orientation:** tilting the phone, e.g. pointing it at the ground, can make Android rotate the screen 180°. Chrome then kept drawing the camera at the old angle, so the preview and the frames sent to the model were upside down.
+  - Fix: `start()` calls `lockPortrait()` within the tap. On phones (`pointer: coarse`) this enters fullscreen and runs `screen.orientation.lock('portrait-primary')`, because Chrome only allows the lock in fullscreen. `stop()` unlocks and exits fullscreen.
+  - Fallback when locking isn't possible: a `screen.orientation` `change` listener detects a 180° turn while running, then calls `resetView()` and `reopenCamera()`.
+  - `reopenCamera()` runs camera reopens one at a time; overlapping reopens leave a camera running. The switch-camera button uses it too.
+  - Fullscreen can end early: the first camera permission prompt, a back swipe or an app switch. While running, the next tap anywhere except Start/Stop calls `lockPortrait()` again.
+  - `cameraToken`: `stopCamera()` bumps it, and `openStream()` closes a camera that finishes opening after a newer stop or reopen. Without it, a Stop during opening left the camera light on. `start()` also returns early if Stop was tapped while the camera was opening.
+  - `grabFrame()` returns null while no camera is attached, so a stale (possibly upside-down) frame is never sent during a reopen.
+  - Simulated in Node against the real `app.js` with a fake browser, 12 checks pass: Stop while opening, overlapping reopens, 180° vs 90° turns, a turn while stopped, `grabFrame` with no camera, fullscreen lock/re-lock/unlock, and desktop not locking.
+  - Not yet verified on a device.
 - **Lifecycle:** `start()` and `stop()` bump `runId` so stale loops and replies are ignored. `resetView()` runs on start, stop and camera switch. The screen wake lock is held while running. The app stops when the page is hidden and resumes when it is visible again.
 - **State:**
   - `said` holds up to 5 alerts for the current view and is sent to the model.
@@ -206,6 +233,9 @@ handleReply():
 | Stair count × 0.75 in code (`STAIR_COUNT_FACTOR`) | User wants underestimates. The model overcounts short flights consistently (5 for 2 gate steps, 10 for 8) and prompt wording didn't fix it. Overestimates went from 12/36 to 4/36; the remaining ones are on a 2-step flight. Long flights are already undercounted (15 for ~25). |
 | Focus on center and foreground | User requirement. Old vs new prompt on 12 photos: dropped edge and distant details (a bike-lane sign at the edge, people far down a concourse, a building under construction behind a fence). Signs, doors and stairs straight ahead are still reported. |
 | ElevenLabs `eleven_v4_turbo` for speech | The user asked for maximum realism and generation speed, with unlimited credits. Per ElevenLabs' model docs (Oct 2026), v4 Turbo is their most realistic real-time model at about 100 ms median inference. Flash v2.5 is about 75 ms but lower quality; Eleven v4 is the highest quality but not real-time. The earlier browser `speechSynthesis` version was removed because it lagged about 10 s behind. |
+| Early speech: start generating in `describe()` | Without it, generation only starts after the reply has gone to the phone and the phone has asked for audio, which costs one phone↔laptop round trip. Measured from the reply reaching the phone to its first audio byte, over 6–7 real alerts, with a simulated 150 ms hop each way: median 901 ms → 510 ms. With no network hop, no difference (328 vs 351 ms, noise). |
+| Raw PCM streaming instead of MP3 | With MP3, the browser had to download and decode the whole clip before playing: about 0.7–0.9 s plus decode time. The PCM stream's first chunk arrives in about 0.2 s and is played at once. |
+| `[speaking quickly]` tag for faster speech | User asked for faster speech. Measured: v4 Turbo ignores `voice_settings.speed` (same 5.0 s clip at 1.0, 1.2 and 1.5) but follows the tag, giving about 15–20% shorter clips (4.40 s → 3.68 s for one alert; 16.48 s → 14.00 s for three alerts through the server). `scribe_v2` transcripts of 9 clips confirm the tag isn't spoken. Alternative: `ELEVENLABS_MODEL=eleven_flash_v2_5` with speed 1.2 is faster still (3.16 s vs 3.84 s for the same sentence; first audio about 170 ms) but less realistic. |
 | Speech queue: in order, nothing dropped, every clip generated as soon as it is queued | User requirement: no alert is lost. Generating ahead means the next clip is ready when the current one ends. Interrupt mode is opt-in. In queue mode, speech can fall behind if alerts come faster than they can be spoken; the voice chip shows how many are queued. |
 | Web Audio API for playback, unlocked in the Start tap | iOS Safari only plays sound started from a user tap. One `AudioContext` resumed in the tap can play every later clip; new `<audio>` elements created later would be blocked. |
 | Zero dependencies | Runs anywhere with Node 18+. No build step. |
