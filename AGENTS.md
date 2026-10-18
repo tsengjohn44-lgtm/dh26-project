@@ -17,7 +17,8 @@ A phone web page that streams the rear camera to the **Perceptron Mk1.5** vision
 Rules for the output:
 - At most 12 words, on one line.
 - Positions are only **left, ahead or right**, plus **"close"** for anything within about 2 steps.
-- **No distances or step counts**, except stairs, which always get an estimated minimum: "Stairs down ahead, at least 8 steps."
+- **Focus on what is directly ahead:** the center of the frame and the ground about to be walked on. Ignore far-away things and things at the edges of the frame, unless they are moving toward the person.
+- **No distances or step counts**, except stairs. Stairs always say **up or down** and give a **cautious minimum** count: "Stairs going down ahead, at least 6 steps." Underestimating is preferred to overestimating; `filter.js` also scales the model's count down by 0.75.
 - If nothing new and important is visible, the model replies **`n/a`**. The app then shows nothing new.
 - The app must **not repeat** what it has already said about the current view.
 
@@ -113,6 +114,7 @@ handleReply():
 - The prompt examples are copied almost word for word by the model. Keep them generic. An example once said "Curb close ahead, crosswalk beyond it", and the model then added "crosswalk beyond it" to a photo with no crosswalk.
 
 ### `narrator/public/filter.js` (UMD: `window.Filter` in the browser, `require()` in Node)
+- `cautiousStairCount(text)` multiplies the first "N steps/stairs" by `STAIR_COUNT_FACTOR = 0.75`, rounds down, with a minimum of 1, and fixes the plural. `classifyReply` applies it to every new alert, so the caption and `said` hold the discounted count.
 - `classifyReply(raw, said)` returns `{text, reason}`:
   - It collapses whitespace and strips surrounding quotes.
   - `n/a` and "No change." become `reason: 'n/a'`.
@@ -175,6 +177,9 @@ handleReply():
 | "List signs in one alert" rule | Without it, a sign listing rooms 71A, 71B, 71F and 71G produced 4 alerts in about 2 s. |
 | Door rule ("say door only for an actual door…") | The user reported wide open spaces being called doorways. We couldn't reproduce it on stills (0 of 36 open-space answers said door), so this is a precaution. Real doors are still detected. |
 | No distances except stair counts | User requirement. Measured adherence: 1 violation in 69 non-stair replies; stairs gave "at least N" 7 of 7 times. |
+| Stairs: always up/down, with visual cues in the prompt | User requirement. Cues: going up shows the step fronts rising; going down shows step tops and edges dropping away. At temperature 0.2 on 6 stair photos (36 replies), direction was stated 36/36 and correct 30/36. All 6 errors were one side-on photo whose direction is hard to judge. |
+| Stair count × 0.75 in code (`STAIR_COUNT_FACTOR`) | User wants underestimates. The model overcounts short flights consistently (5 for 2 gate steps, 10 for 8) and prompt wording didn't fix it. Overestimates went from 12/36 to 4/36; the remaining ones are on a 2-step flight. Long flights are already undercounted (15 for ~25). |
+| Focus on center and foreground | User requirement. Old vs new prompt on 12 photos: dropped edge and distant details (a bike-lane sign at the edge, people far down a concourse, a building under construction behind a fence). Signs, doors and stairs straight ahead are still reported. |
 | No text-to-speech | Removed at the user's request. (It also lagged badly: about 10 s per utterance against about 1.3 s per description.) |
 | Zero dependencies | Runs anywhere with Node 18+. No build step. |
 
@@ -190,6 +195,7 @@ There is no automated test suite in the repo yet. The evaluation scripts used so
    Cases that must hold:
    - same stairs with a different count → `repeat`
    - stairs became "close" → new
+   - `cautiousStairCount("Stairs going up ahead, at least 3 steps.")` → "…at least 2 steps."
    - Room 214 → Room 215 → new
    - "Curb ahead." after "Curb ahead, crosswalk beyond it." → `repeat`
    - `n/a` → `n/a`
@@ -222,6 +228,7 @@ If you add a proper harness, put it in `narrator/eval/` and keep images out of g
 - **Latency floor:** the model takes about 0.8–1.8 s per frame. Scene change → alert is about 1–1.5 s at best.
 - **Motion:** single frames can't tell whether something is approaching. "Approaching" claims are guesses based on context.
 - **Ultra-wide lens:** only reachable when the browser exposes it, mainly iOS Safari. Most Android browsers expose neither the lens nor zoom below 1×. Ultra-wide also makes distant text smaller.
+- **Stairs seen from the side** (not head-on) can get the wrong direction. Stair counts are rough: short flights are discounted in code, long flights come out low.
 - **View-change detection:** about 5% of real place changes go unnoticed (similar-looking views). Walking forward sometimes triggers a reset, which re-announces the scene.
 - **No memory beyond the current view's last 5 alerts.** Turning away and back re-announces things.
 - **Rate limit** is shared across the organization: about 2 phones at the default interval on one key.
