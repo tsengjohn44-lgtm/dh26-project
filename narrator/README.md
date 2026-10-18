@@ -68,6 +68,33 @@ Edit the prompt in `prompt.js`. Setting `MOTION_FRAMES = true` in `public/app.js
 
 Optional environment variables: `PERCEPTRON_MODEL`, `PORT` (default 8080), `HTTPS_PORT` (default 8443).
 
+## Saved descriptions (dataset)
+
+**⚙ Settings → Data → Save descriptions** (off by default, set separately on each phone).
+
+- **What's sent:** each alert the phone shows goes to the server, which appends one line to `narrator/data/<YYYY-MM-DD>.jsonl` on that computer. Text only: no images, no location.
+- **Who it came from:** every phone gets a random phone ID (shown under the switch). Each **Start** begins a new session.
+- **In git:** `narrator/data/` is gitignored, so collected data is never committed.
+
+Each line looks like:
+
+```json
+{"t":"2026-10-18T08:41:03.112Z","phone":"1e9211ae-…","session":"101af34c-…","n":1,
+ "text":"Drop-off: stairs going down ahead, at least 3 steps.",
+ "words":["drop-off","stairs","going","down","ahead","at","least","3","steps"],
+ "hazard":"drop","positions":["ahead"],"close":false,"stairs":{"direction":"down","minSteps":3},
+ "quoted":[],"source":"fast","reasoning":"none","style":"safety","clientTime":"…"}
+```
+
+Field notes:
+
+- `hazard` is `trip`, `drop`, `head`, `moving`, `obstacle` or `null`.
+- `quoted` holds sign text the model quoted.
+- `source` is `fast`, or `refine` for a Fast + Low correction.
+- `t` is the server's clock.
+
+The parsing lives in `data.js`; check it with `node narrator/eval/data-test.js`. Sign text such as room or building names can reveal where someone walked, so ask people before turning this on for them.
+
 ## Distance sensor (ESP8266)
 
 `esp8266_main.ino` sends a reading every ~200 ms. Put the address the server prints at startup (`ESP8266: set serverUrl to http://<laptop-ip>:5000/distance`) into `serverUrl`, and make sure the board joins the same Wi-Fi as the laptop.

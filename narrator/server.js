@@ -11,6 +11,7 @@ const https = require('https');
 const { execFileSync } = require('child_process');
 const { buildPayload } = require('./prompt');
 const Filter = require('./public/filter.js');
+const Data = require('./data');
 
 const ROOT = __dirname;
 const PUBLIC = path.join(ROOT, 'public');
@@ -103,9 +104,13 @@ function ensureCert() {
 }
 
 function serveStatic(req, res) {
-  const urlPath = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+  // decodeURIComponent throws on a malformed escape such as "/%E0"; uncaught, that one request
+  // took the whole server down.
+  let urlPath;
+  try { urlPath = decodeURIComponent(new URL(req.url, 'http://x').pathname); } catch { return send(res, 400, 'Bad path'); }
   const file = path.normalize(path.join(PUBLIC, urlPath === '/' ? 'index.html' : urlPath));
-  if (!file.startsWith(PUBLIC)) return send(res, 403, 'Forbidden');
+  // The separator matters: a bare startsWith(PUBLIC) would also accept a sibling like "public2".
+  if (!file.startsWith(PUBLIC + path.sep)) return send(res, 403, 'Forbidden');
   fs.readFile(file, (err, data) => {
     if (err) return send(res, 404, 'Not found');
     res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
@@ -292,6 +297,21 @@ function takeEarlySpeech(text) {
   return entry.job;
 }
 
+// ---------- saved descriptions (opt-in on each phone: Settings > Data) ----------
+
+// POST /api/log  { phone, session, n, text, source, reasoning, style, t }  ->  204
+// Appends one record (with a words list, see data.js) to narrator/data/<date>.jsonl.
+async function logAlert(req, res) {
+  let record;
+  const now = new Date();
+  try { record = Data.buildRecord(await readJson(req, 8 * 1024), now); } catch (e) { return send(res, 400, `Bad request: ${e.message}`); }
+  Data.appendRecord(record, now, (err) => {
+    if (err) { console.error('Could not save description:', err.message); return send(res, 500, 'Could not save'); }
+    res.writeHead(204);
+    res.end();
+  });
+}
+
 // ---------- distance sensor (ESP8266) ----------
 // The ESP8266 POSTs `distance=<metres>` or `distance=Out_of_Range` (form-encoded) about every
 // 200 ms. The latest reading is pushed to every open phone over Server-Sent Events, where
@@ -389,6 +409,7 @@ function handler(req, res) {
   if (req.method === 'GET' && req.url.startsWith('/api/distance/stream')) return distanceStream(req, res);
   if (req.method === 'POST' && req.url.startsWith('/api/describe')) return describe(req, res);
   if (req.method === 'POST' && req.url.startsWith('/api/speak')) return speak(req, res);
+  if (req.method === 'POST' && req.url.startsWith('/api/log')) return logAlert(req, res);
   if (req.method === 'GET' || req.method === 'HEAD') return serveStatic(req, res);
   send(res, 405, 'Method not allowed');
 }

@@ -7,3 +7,6 @@ node_modules/
 __pycache__/
 narrator/certs/key.pem
 narrator/certs/cert.pem
+
+# Saved descriptions from phones (narrator/data.js). Collected data, never committed.
+narrator/data/

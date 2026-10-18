@@ -127,6 +127,12 @@
         <input id="beepIntensity" type="range" min="0.5" max="2" step="0.1" value="1" aria-label="Beep intensity">
       </label>
 
+      <h3>Data</h3>
+      <label class="row">
+        <span><strong>Save descriptions</strong><small>Sends each alert's text (no images) to the computer running the server, to build a dataset. <span id="phoneIdText"></span></small></span>
+        <input id="saveData" type="checkbox" class="switch">
+      </label>
+
       <h3>Diagnostics</h3>
       <button id="debugBtn" type="button" class="row switch-row" aria-pressed="false">
         <span><strong>Diagnostics overlay</strong><small>Timing, camera, blur and sensor details</small></span>

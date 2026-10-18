@@ -353,8 +353,9 @@ function handleReply(seq, view, reply, totalMs, apiMs) {
   showAlert(text);
 }
 
-// Show and speak a new alert; the previous one moves to history.
-function showAlert(text) {
+// Show and speak a new alert; the previous one moves to history. source: 'fast' (the normal
+// reply) or 'refine' (a Fast + Low correction), recorded with the alert when saving is on.
+function showAlert(text, source = 'fast') {
   const shown = currentEl.dataset.alert;
   if (shown) pushHistory(shown);
   currentEl.textContent = text;
@@ -362,6 +363,7 @@ function showAlert(text) {
   said = [...said, text].slice(-MAX_SAID);
   // Hazard alerts ("Trip hazard: …", "Drop-off: …") cut in ahead of non-hazard speech.
   Speech.say(text, { urgent: Filter.hazardLabel(text) !== null });
+  logAlert(text, source);
 }
 
 // ---------- "Fast + Low" (hybrid) reasoning ----------
@@ -408,7 +410,7 @@ function handleSlowReply(seq, view, reply, t0) {
   const { text } = Filter.classifyReply(reply, said, { refine: true });
   if (!text) { slowStats.suppressed++; return; }
   slowStats.spoken++;
-  showAlert(text);
+  showAlert(text, 'refine');
 }
 
 function pushHistory(text) {
@@ -679,6 +681,7 @@ async function start() {
   running = true;
   const id = ++runId;
   pausedUntil = 0;
+  startDataSession();
   resetView();
   startBtn.textContent = 'Stop';
   startBtn.classList.add('running');
@@ -779,6 +782,40 @@ pauseBox.addEventListener('change', () => {
   savePref('pauseWhileSpeaking', pauseBox.checked);
   if (!pauseWhileSpeaking && statusEl.textContent.includes('paused while speaking')) setStatus('Live', running);
 });
+
+// ---------- saved descriptions (Settings > Data, off by default) ----------
+// With "Save descriptions" on, each alert this phone shows is sent to the server (POST /api/log),
+// which adds it, with a words list, to narrator/data/<date>.jsonl on that computer (data.js).
+// Text only: no images or location. The phone id is random and stays on this phone, so every
+// person's phone is its own series; each Start begins a new session id.
+const dataBox = $('saveData');
+dataBox.checked = loadPref('saveData', false);
+dataBox.addEventListener('change', () => savePref('saveData', dataBox.checked));
+
+const randomId = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`);
+const phoneId = (() => {
+  try {
+    let id = localStorage.getItem('phoneId');
+    if (!id) { id = randomId(); localStorage.setItem('phoneId', id); }
+    return id;
+  } catch { return randomId(); } // storage blocked: a new id for each page load
+})();
+$('phoneIdText').textContent = `This phone: ${phoneId.slice(0, 8)}`;
+let sessionId = null;
+let logCount = 0;
+
+function startDataSession() {
+  sessionId = randomId();
+  logCount = 0;
+}
+
+function logAlert(text, source) {
+  if (!dataBox.checked || !sessionId) return;
+  const record = { phone: phoneId, session: sessionId, n: ++logCount, text, source, reasoning: reasoningSelect.value, style: alertStyle(), t: new Date().toISOString() };
+  // keepalive: the last alert still gets saved if the page is closed right after it.
+  fetch('/api/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(record), keepalive: true })
+    .catch(() => { /* saving is best-effort; the app keeps working without it */ });
+}
 
 function renderVoice() {
   const { delayMs, lastError } = Speech.stats;
