@@ -66,6 +66,9 @@ const gaps = (beeps) => beeps.slice(1).map((x, i) => x.t - beeps[i].t);
     check('Stop: stream closed, no further beeps', e.es().closed && e.beeps.length === m && e.level() === 0, `${e.es().closed} ${m}->${e.beeps.length}`); }
   { const e = fakeEnv(); e.b.start(); e.b.volume = 0.25; e.send(0.5); e.b.tick();
     check('volume slider scales the level', Math.abs(e.level() - 0.25) < 1e-9, e.level()); e.b.stop(); }
+  { const e = fakeEnv(); e.b.start(); e.b.volume = 1.8; e.send(0.5); e.b.tick();
+    const boosted = Math.abs(e.level() - 1.8) < 1e-9; e.b.volume = 5;
+    check('volume goes up to 200% and no further', boosted && e.b.volume === 2, e.b.volume); e.b.stop(); }
   { const e = fakeEnv(); e.b.start();
     const r0 = e.b.reading; e.send(0.85); const r1 = e.b.reading; e.send(null); const r2 = e.b.reading;
     e.send(4.3); const r3 = e.b.reading; e.send(0.5, 60000); const r4 = e.b.reading; e.send(0.5); e.b.enabled = false; const r5 = e.b.reading; e.b.stop();

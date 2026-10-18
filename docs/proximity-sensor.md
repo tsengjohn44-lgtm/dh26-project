@@ -77,7 +77,7 @@ The server listens for the board on port 5000 (`DISTANCE_PORT`). **On macOS, the
 - **Ducking:** 30% volume while the voice speaks, except at ≤10 cm. Shares the voice's `AudioContext`, so the Start tap unlocks both on iPhone.
 - **Settings:**
   - Beeps on/off in the bottom bar
-  - Beep volume (default 60%) and Intensity (0.5–2×; higher ramps up sooner) under Settings → Proximity sensor
+  - Beep volume (0–200%, default 60%) and Intensity (0.5–2×; higher ramps up sooner) under Settings → Proximity sensor
   - the status pill shows the distance when an obstacle is within range
 
 ## Accuracy notes

@@ -211,7 +211,7 @@ handleReply():
 - **Scheduler:** a lookahead loop runs every 50 ms and schedules 150 ms ahead on the audio clock. The next beep is due one *current* interval after the last, so approaching speeds up at once. Each beep is a sine `OscillatorNode` with a 5 ms attack and 60 ms decay.
 - **Levels:** master gain = volume × 0.3 while `Speech.pending > 0` (ducking), except when `urgent`. It ramps with `setTargetAtTime` so it doesn't click.
 - Shares `Speech.context`, the `AudioContext` unlocked in the Start tap.
-- **UI:** Beeps row in the footer: the `#beeps` toggle, `#beepVolume` 0–100 (default 60) and `#beepIntensity` 0.5–2 (default 1). They're saved in `localStorage` keys `beeps`, `beepVolume` and `beepIntensity`.
+- **UI:** Beeps row in the footer: the `#beeps` toggle, `#beepVolume` 0–200% (default 60; above 100% the loudest beep reaches full scale) and `#beepIntensity` 0.5–2 (default 1). They're saved in `localStorage` keys `beeps`, `beepVolume` and `beepIntensity`.
 - **`Beeper.reading`:** `{ metres, ageMs }` for a valid fresh reading (2 cm–4 m, ≤1.5 s old), else `null`. `app.js` `sensorContext()` turns it into `sensor: { distanceM, heightM }` on describe, Fast + Low and ask requests when `#sensorToAi` is on (default on; height `#sensorHeight`, default 1 m; keys `sensorToAi`, `sensorHeight`). `prompt.js` `cleanSensor`/`sensorText` add one paragraph to the user message. The `#distance` header chip shows "obstacle 0.42 m", "sensor: clear" or "sensor offline".
 - **Tests (simulated):** curve and scheduler, 20 checks with a fake audio clock and stream. Server stream, 11 checks with real HTTP. App wiring, 5 checks in the fake browser.
 
@@ -288,7 +288,8 @@ handleReply():
 - **Grounding:** `vision_config.annotation_format: "point" | "box" | "polygon"` returns markup inside the text with normalized 0–1000 coordinates. Not used yet; needed for the spatial map (section 10).
 - **Stateless:** the API does not remember earlier requests or images. Every request carries all of its own context. Context window is 36,864 tokens; up to 256 media units per request; 20 MiB JSON body limit; 120 s time limit per request.
 - **Rate limit:** 300 chat requests per minute per organization by default, across all keys. The app at 0.4 s intervals uses about 130–150 requests per minute; **don't run several phones on one key at a short interval**.
-- Pricing: $0.15 per million input tokens and $1.50 per million output tokens, roughly $0.01 per minute of use.
+- Pricing: $0.15 per million input tokens and $1.50 per million output tokens. Per request (~730 input tokens): Off ≈ $0.00014 (~17 output tokens), Low ≈ $0.0004–0.0006, High ≈ $0.0025; Fast + Low pays for both. At the default 0.4 s interval (~140 requests/min, Off) that is **about $0.02 per minute**.
+- **ElevenLabs cost (estimate, not measured on a bill):** API billing is per character of input text, not tokens. Third-party pricing pages (Oct 2026) list v4 Turbo at about **$0.04 per 1,000 characters** (some older pages say $0.05); confirm on elevenlabs.io/pricing. An alert is ≤ 12 words, about 60–80 characters plus the 10-character `[rapidly] ` tag. Speech takes ~2.5 s per alert, so continuous speech is at most ~24 alerts/min ≈ 1,800 characters ≈ **$0.07/min worst case**; a typical walk at ~6 alerts/min is ≈ 500 characters ≈ **$0.02/min**. Early-speech jobs the phone never claims are still billed. Total for both services: roughly **$0.04–0.09 per minute**.
 - Docs index: `https://docs.perceptron.inc/llms.txt`. Every page is available as raw markdown by adding `.md`.
 
 ## 7. Decisions and the evidence behind them (don't undo without new data)

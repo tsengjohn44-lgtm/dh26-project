@@ -19,6 +19,7 @@
   const LOOKAHEAD = 0.15;    // s of beeps scheduled ahead on the audio clock (steady timing)
   const TICK_MS = 50;
   const DUCK = 0.3;          // beep level while the voice speaks
+  const MAX_VOLUME = 2;      // 200%: PEAK x 2 = full scale, so the loudest beep reaches 0 dBFS without clipping
 
   // Beep settings for a distance, or null for silence. intensity 0.5-2 (1 = the base curve):
   // closeness is raised to 1/intensity, so higher intensity ramps up sooner.
@@ -148,7 +149,7 @@
       get enabled() { return enabled; },
       set enabled(v) { enabled = !!v; if (!enabled) mute(); },
       get volume() { return volume; },
-      set volume(v) { volume = Math.min(1, Math.max(0, Number(v))); },
+      set volume(v) { volume = Math.min(MAX_VOLUME, Math.max(0, Number(v))); },
       get intensity() { return intensity; },
       set intensity(v) { intensity = Math.min(2, Math.max(0.5, Number(v))); },
       set onChange(fn) { onChange = fn; },
