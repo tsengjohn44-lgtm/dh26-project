@@ -1,0 +1,87 @@
+#include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
+
+// Wi-Fi Credentials
+const char* ssid = "NoozAboode";
+const char* password = "bruhbruh";
+
+// Python Server Details
+const char* serverUrl = "http://192.168.1.X:5000/distance"; 
+
+// Pin Definitions
+const int trigPin = 12;   // D6 maps to GPIO 12
+const int echoPin = 14;   // D5 maps to GPIO 14
+const int buzzerPin = 16; // D0 maps to GPIO 16
+
+// Helper function to handle sending data over Wi-Fi
+void sendDataToServer(String payload) {
+  WiFiClient client;
+  HTTPClient http;
+  http.setTimeout(250); // Fast timeout to prevent loops from freezing
+  http.begin(client, serverUrl);
+  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+  http.POST("distance=" + payload);
+  http.end();
+}
+
+void setup() {
+  Serial.begin(9600);
+  
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+  pinMode(buzzerPin, OUTPUT);
+
+  // Turn off buzzer initially
+  digitalWrite(buzzerPin, LOW);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  Serial.println("\nConnecting to Wi-Fi...");
+}
+
+void loop() {
+  // 1. Trigger the Ultrasonic Sensor
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  // 2. Read pulse with a 30ms timeout (~4m maximum range)
+  long duration = pulseIn(echoPin, HIGH, 30000); 
+
+  // 3. Handle Distance Logic
+  if (duration == 0) {
+    Serial.println("Distance: Out of Range (> 4m)");
+    digitalWrite(buzzerPin, LOW); // Turn off buzzer when out of range
+    
+    if (WiFi.status() == WL_CONNECTED) {
+      sendDataToServer("Out_of_Range");
+    }
+  } else {
+    // Calculate distance in meters
+    float distanceMeters = (duration * 0.034 / 2) / 100.0;
+    
+    Serial.print("Distance: ");
+    Serial.print(distanceMeters, 3);
+    Serial.println(" m");
+
+    // 4. Proximity Warning Check (< 0.2 meters)
+    if (distanceMeters < 0.050) {
+      // DRIVE PIN WITH LOWER VOLTAGE (Software PWM):
+      // On ESP8266, analogWrite ranges from 0 (0V) to 1023 (3.3V).
+      // 150 gives roughly 15% power/voltage equivalent, making it much quieter.
+      analogWrite(buzzerPin, 20); 
+    } else {
+      // Distance is safe, turn buzzer off
+      analogWrite(buzzerPin, 0); 
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+      sendDataToServer(String(distanceMeters, 3));
+    }
+  }
+
+  // Fast scroll update rate
+  delay(200); 
+}
