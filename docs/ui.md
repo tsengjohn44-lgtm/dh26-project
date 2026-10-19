@@ -1,6 +1,6 @@
 # User interface
 
-Code: `narrator/public/index.html`, `style.css`, `ui.js` (behaviour), `app.js` (logic). Redesigned 2026-10-18: clean, one main action, no sub-menus.
+Code: `narrator/public/index.html`, `style.css`, `ui.js` (behaviour), `app.js` (logic). Redesigned 2026-10-18: clean, one main action, no sub-menus. Restyled the same day as neo-brutalist (flat colour blocks, thick black outlines, hard shadows).
 
 ## Main screen
 
@@ -10,7 +10,7 @@ Code: `narrator/public/index.html`, `style.css`, `ui.js` (behaviour), `app.js` (
 │                              │
 │        (camera, full)        │
 │ ╭──────────────────────────╮ │
-│ │ Stairs going down ahead, │ │  alert card (amber edge = hazard)
+│ │ Stairs going down ahead, │ │  alert card (striped edge = hazard)
 │ │ at least 6 steps.        │ │  tap to hear it again
 │ ╰──────────────────────────╯ │
 │   Door on right · Curb close │  last 2 alerts, faded
@@ -22,11 +22,11 @@ Code: `narrator/public/index.html`, `style.css`, `ui.js` (behaviour), `app.js` (
   - States: Idle, Starting…, Live, Live · new view, Live · nothing new, Live · already said, Live · paused while speaking, Live · hold steady (blurry), Error.
   - Sensor badge: "obstacle 0.42 m", "sensor: clear" or "sensor offline".
 - **Alert card** (`#current`): large text (24–32 px depending on width).
-  - The amber left edge marks hazards: stairs, steps, curb, drop, hole, close, car, bike, cyclist, vehicle, approaching.
+  - Hazards turn the card yellow with black/yellow warning stripes down the left edge (a pattern, so not colour alone): stairs, steps, curb, drop, hole, close, car, bike, cyclist, vehicle, approaching.
   - Android phones vibrate for 40 ms on each new alert, and new alerts slide in.
   - **Tap or press Enter to hear it again.**
 - **Recent alerts** (`#history`): the last two alerts, faded. The app keeps four; CSS shows two. **Tap them to open the full History.**
-- **Bottom bar:** Voice (`#voice`), **🎤 Ask** (`#ask`: tap once and speak, and the question is sent when you stop talking; tapping again sends at once, and holding sends on release; pulses red while listening; see [questions.md](questions.md)), Start/Stop (`#start`, 88 px, red while running), Beeps (`#beeps`).
+- **Bottom bar:** Voice (`#voice`), **🎤 Ask** (`#ask`: tap once and speak, and the question is sent when you stop talking; tapping again sends at once, and holding sends on release; blinks red while listening; see [questions.md](questions.md)), Start/Stop (`#start`, 92 px, red while running), Beeps (`#beeps`).
 - **⇄** (`#flip`): switches between the front and rear cameras.
 
 ## History (🕘 → bottom sheet)
@@ -39,7 +39,7 @@ Every Perceptron reply, and what the app did with it, is kept **on the phone** (
   - Spoken entries hold the text as shown (stair count and label corrected); dropped ones hold the model's raw reply.
 - **The sheet** (`#logSheet`, opened by `#historyBtn` or by tapping the recent alerts):
   - **Spoken / All replies** filter (remembered as `logFilter`). All replies adds the dropped ones, dimmed, with their time taken.
-  - Newest first; hazards marked with the amber edge; new replies appear live while it's open. 300 rows at a time, then **Show older**.
+  - Newest first; hazards marked with the striped edge; new replies appear live while it's open. 300 rows at a time, then **Show older**.
   - **Tap a row** to hear it again.
   - **Copy**: the list as plain text (date, time, kind, text, ms), for sharing or checking the prompt. Falls back to a text selection where the clipboard API isn't available (plain HTTP).
   - **Clear**: deletes the history after a confirmation.
@@ -84,14 +84,16 @@ For testing on a device. It shows:
   - hazard highlight and vibration, via a `MutationObserver` on the card's `data-alert`
 - If `ui.js` fails, every control still works as a plain form control.
 - **Styling:**
-  - dark theme with CSS variables and one amber accent
-  - frosted panels (`backdrop-filter`, with a solid fallback); the sheet is fully opaque so the alert never shows through
+  - neo-brutalist: CSS variables for ink (black), paper (cream), yellow (primary/on), red (stop/live/listening), blue (Ask, tools)
+  - every panel is an opaque block with a 3 px black border and a hard offset shadow; pressing a button drops it onto its shadow
+  - heavy type (Arial Black stack) for the alert, Start and headings; monospace for status, labels and diagnostics; no web fonts
+  - off toggles in the bar are grey with a diagonal slash, on toggles yellow, so state isn't shown by colour alone
   - a top and bottom scrim over the camera for contrast
 - **Phones:** in fullscreen with the screen locked to portrait while running (Android); see [vision.md](vision.md).
 
 ## Accessibility
 
-- Tap targets ≥ 48 px (Start is 88 px).
+- Tap targets ≥ 48 px (Start is 92 px).
 - The caption is an `aria-live="polite"` region, so new alerts are announced by screen readers. The card is focusable with a label ("Current alert. Tap to hear it again.").
 - Every control has a visible or screen-reader label. The sheet is a labelled dialog with focus management, and the segmented control is a `radiogroup`.
 - Nothing is conveyed by colour alone: hazards are also in the text and spoken.

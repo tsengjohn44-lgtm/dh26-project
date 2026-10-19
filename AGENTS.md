@@ -76,7 +76,7 @@ narrator/
   certs/             auto-generated self-signed TLS cert (gitignored)
   public/
     index.html       UI: status pill, alert card, Voice/Start/Beeps bar, settings sheet, diagnostics overlay
-    style.css        dark, frosted, phone-first design (one amber accent, ≥48 px targets, reduced-motion aware)
+    style.css        neo-brutalist, phone-first design (black outlines, hard shadows, yellow accent, ≥48 px targets, reduced-motion aware)
     ui.js            UI behaviour: settings sheet, Reasoning segmented control, tap-to-repeat, hazard highlight
     app.js           camera, frame capture, request scheduler, view-change detection, UI updates
     filter.js        shared by browser and Node: n/a and repeat filtering, viewChange()
@@ -219,7 +219,7 @@ handleReply():
 - **Main screen:**
   - a status pill: `#status` with a red pulsing dot when live, plus the `#distance` badge
   - ⚙ `#settingsBtn` and ⇄ `#flip`
-  - the alert card `#current` (28–32 px; amber left edge when `.hazard`)
+  - the alert card `#current` (23–31 px; yellow with a striped left edge when `.hazard`)
   - the last two `#history` lines (the rest hidden by CSS)
   - a bottom bar: Voice quick toggle `#voice`, Start/Stop `#start`, Beeps quick toggle `#beeps`
 - **Settings sheet** (`#sheet`): one scrolling list, no sub-menus.
